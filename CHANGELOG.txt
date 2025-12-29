@@ -1,0 +1,53 @@
+## Version 1.0.0 - Initial Release
+
+### 🎉 First Release!
+Guild Achieves automatically congratulates your guildies on their achievements with hilarious, sarcastic messages!
+
+### Features
+- **Automatic Achievement Detection** - Listens for CHAT_MSG_GUILD_ACHIEVEMENT events
+- **Smart Categorization** - Automatically detects achievement types (Levels, Dungeons, Raids, PvP, etc.)
+- **Random Delay** - 1-3 second delay before responding (so it doesn't look like a bot!)
+- **Cooldown System** - Configurable cooldown to prevent spam (default 5 seconds)
+
+### Message Database
+- **800+ unique messages** across all achievement categories
+- **40 messages per category** for maximum variety
+- **Special level messages** for milestones 10, 20, 30, 40, 50, 60, 70, 80, 85, and 90
+- **Extra sarcastic** messages for Level 85 (highlighting the grind to 90)
+- **Gear grind jokes** for Level 90 (now the REAL game begins!)
+
+### Categories Supported
+- Level Achievements (10-90)
+- Quest Achievements
+- Exploration Achievements  
+- Dungeon Achievements
+- Raid Achievements
+- PvP Achievements
+- Profession Achievements
+- Reputation Achievements
+- Pet Battle Achievements
+- Scenario Achievements
+- World Event/Holiday Achievements
+- General (fallback for uncategorized)
+
+### Settings & Configuration
+- Enable/Disable toggle
+- Per-category toggles
+- Cooldown slider (0-30 seconds)
+- Self-congratulation option
+- Debug mode for troubleshooting
+- Three UI templates (Default, Transparent, Class Color)
+- Minimap button with left-click toggle and right-click settings
+
+### Supported Game Versions
+- Mists of Pandaria Classic (5.5.0)
+- World of Warcraft Retail (11.2.5+)
+- Classic Era (1.15.x)
+- Burning Crusade Classic (2.5.x)
+- Wrath of the Lich King Classic (3.4.x)
+- Cataclysm Classic (4.4.x)
+
+### Slash Commands
+- /guildachieves - Open settings
+- /ga - Open settings (shortcut)
+

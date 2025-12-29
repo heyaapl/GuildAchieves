@@ -1,0 +1,512 @@
+name: Package and Release
+
+# TRIGGERS:
+# - GitHub Release creation → RELEASE builds and CurseForge uploads
+# - Pushes to main → RELEASE builds and direct CurseForge uploads
+# - Pushes to feature/develop branches → ALPHA builds
+
+on:
+  release:
+    types: [published]    # Trigger on release creation
+  push:
+    branches:
+      - main               # Auto-create GitHub Release (which triggers CurseForge upload)
+      - develop            # Alpha builds
+      - 'feature/**'
+      - 'hotfix/**' 
+      - 'release/**'
+      - '*'
+
+env:
+  GAME_VERSIONS: "5.5.0,11.2.5,1.15.7,3.4.5,4.4.2,2.5.4"  # MOP Classic and Retail
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to create tags and releases
+      actions: read    # Required to read workflow context
+    outputs:
+      release-type: ${{ steps.release-type.outputs.RELEASE_TYPE }}
+      version: ${{ steps.release-type.outputs.VERSION }}
+      is-tagged: ${{ steps.release-type.outputs.IS_TAGGED }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for proper versioning
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}  # Ensure we can push tags
+          
+      - name: Determine release type and version
+        id: release-type
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Branch/Tag: ${{ github.ref_name }}"
+          echo "Ref: ${{ github.ref }}"
+          
+          # Determine release type based on event type
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            # GitHub Release was created - this is always a RELEASE build
+            echo "Debug: Processing GitHub Release event"
+            RELEASE_TYPE="release"
+            
+            # Extract version from release tag
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
+            VERSION="${RELEASE_TAG#v}"  # Remove v prefix if present
+            IS_TAGGED="true"           # Release creation already created the tag
+            SHOULD_CREATE_TAG="false"  # Tag already exists
+            
+            echo "Debug: Release event - TAG=${RELEASE_TAG}, VERSION=${VERSION}"
+            
+            # Determine release vs pre-release
+            if [[ "${RELEASE_TAG}" == *"alpha"* ]]; then
+              RELEASE_TYPE="alpha"
+              echo "Debug: Detected alpha release"
+            elif [[ "${RELEASE_TAG}" == *"beta"* ]]; then
+              RELEASE_TYPE="beta"
+              echo "Debug: Detected beta release"
+            else
+              RELEASE_TYPE="release"
+              echo "Debug: Detected stable release"
+            fi
+            
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            BRANCH_NAME="${{ github.ref_name }}"
+            echo "Debug: Processing push to branch '${BRANCH_NAME}'"
+            
+            if [[ "${BRANCH_NAME}" == "main" ]]; then
+              # Main branch push - direct release packaging
+              echo "Debug: Main branch push - will package as release"
+              RELEASE_TYPE="release"  # Direct release build
+              BASE_VERSION=$(grep "## Version:" GuildAchieves.toc | sed 's/## Version: //' | xargs)
+              
+              # For main branch pushes, DON'T create tags during CI
+              # This avoids "future tag" detection by BigWigsMods packager
+              echo "🔍 Main branch push - packaging without tag creation"
+              
+              # Check for existing tags to determine version, but don't create new ones
+              git fetch --tags origin
+              BASE_TAG_NAME="v${BASE_VERSION}"
+              if git rev-parse --verify "refs/tags/${BASE_TAG_NAME}" >/dev/null 2>&1; then
+                echo "⚠️  Base tag ${BASE_TAG_NAME} exists, finding hotfix suffix..."
+                
+                SUFFIX=""
+                for letter in a b c d e f g h i j k l m n o p q r s t u v w x y z; do
+                  CANDIDATE_TAG="${BASE_TAG_NAME}${letter}"
+                  if ! git rev-parse --verify "refs/tags/${CANDIDATE_TAG}" >/dev/null 2>&1; then
+                    SUFFIX="${letter}"
+                    VERSION="${BASE_VERSION}${letter}"
+                    break
+                  fi
+                done
+                
+                if [[ -z "${SUFFIX}" ]]; then
+                  echo "❌ Could not find available hotfix suffix after trying a-z"
+                  exit 1
+                fi
+                
+                echo "✅ Using hotfix suffix '${SUFFIX}': ${VERSION}"
+              else
+                echo "✅ Base version ${BASE_VERSION} is available"
+                VERSION="${BASE_VERSION}"
+              fi
+              
+              IS_TAGGED="false"
+              SHOULD_CREATE_TAG="false"  # DON'T create tags during CI for main branch
+              echo "Debug: Main branch - will package as release ${VERSION} WITHOUT tag creation"
+              
+            else
+              # Feature/develop branches - alpha builds
+              RELEASE_TYPE="alpha"
+              BASE_VERSION=$(grep "## Version:" GuildAchieves.toc | sed 's/## Version: //' | xargs)
+              VERSION="${BASE_VERSION}-dev-${BRANCH_NAME//\//-}"  # Include branch name for clarity
+              IS_TAGGED="false"
+              SHOULD_CREATE_TAG="false"
+              
+              echo "Debug: Feature branch build - RELEASE_TYPE=${RELEASE_TYPE}, VERSION=${VERSION}"
+            fi
+            
+          else
+            echo "❌ Unsupported event type: ${{ github.event_name }}"
+            exit 1
+          fi
+          
+          echo "RELEASE_TYPE=${RELEASE_TYPE}" >> $GITHUB_OUTPUT
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT  
+          echo "IS_TAGGED=${IS_TAGGED}" >> $GITHUB_OUTPUT
+          echo "SHOULD_CREATE_TAG=${SHOULD_CREATE_TAG}" >> $GITHUB_OUTPUT
+          
+          echo "🏷️  Release Type: ${RELEASE_TYPE}"
+          echo "📦  Version: ${VERSION}"
+          echo "🏷️  Is Tagged: ${IS_TAGGED}"
+          echo "🏷️  Should Create Tag: ${SHOULD_CREATE_TAG}"
+          
+      - name: Create git tag for release builds  
+        if: steps.release-type.outputs.SHOULD_CREATE_TAG == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.release-type.outputs.VERSION }}"
+          TAG_NAME="v${VERSION}"
+          
+          echo "🏷️ Creating git tag for release build"
+          echo "📦 Version: ${VERSION}"
+          echo "🏷️ Tag: ${TAG_NAME}"
+          
+          # Check if tag already exists
+          if git rev-parse --verify "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            echo "⚠️ Tag ${TAG_NAME} already exists, will use existing tag"
+          else
+            # Create and push the tag
+            git tag "${TAG_NAME}"
+            git push origin "${TAG_NAME}"
+            echo "✅ Created and pushed tag: ${TAG_NAME}"
+            
+            # Wait for git sync and verify tag availability
+            echo "⏳ Waiting for git synchronization..."
+            sleep 5
+            
+            # Fetch all tags to ensure sync
+            git fetch --tags --force
+            
+            # Verify tag is available and at correct commit
+            if git rev-parse --verify "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+              TAG_COMMIT=$(git rev-parse "refs/tags/${TAG_NAME}")
+              HEAD_COMMIT=$(git rev-parse HEAD)
+              if [[ "${TAG_COMMIT}" == "${HEAD_COMMIT}" ]]; then
+                echo "✅ Tag ${TAG_NAME} verified at correct commit: ${TAG_COMMIT}"
+              else
+                echo "⚠️ Tag commit (${TAG_COMMIT}) differs from HEAD (${HEAD_COMMIT})"
+                exit 1
+              fi
+            else
+              echo "❌ Tag ${TAG_NAME} verification failed after creation"
+              exit 1
+            fi
+          fi
+          
+          echo "🚀 Tag verified and ready for packaging"
+          
+      - name: Update TOC version for dev builds
+        if: steps.release-type.outputs.RELEASE_TYPE == 'alpha' && steps.release-type.outputs.IS_TAGGED == 'false'
+        run: |
+          # Update version in TOC file for dev builds  
+          sed -i "s/## Version: .*/## Version: ${{ steps.release-type.outputs.VERSION }}/" GuildAchieves.toc
+          echo "Updated TOC version to: ${{ steps.release-type.outputs.VERSION }}"
+          
+      - name: Pre-packaging git synchronization
+        if: steps.release-type.outputs.RELEASE_TYPE != 'skip' && !(steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name == 'push' && github.ref_name == 'main')
+        run: |
+          echo "🔄 Synchronizing git state for packager..."
+          
+          # Ensure we have the latest tags and refs
+          git fetch --all --tags --force --prune
+          
+          # For release builds, verify tag exists and points to current commit
+          if [[ "${{ steps.release-type.outputs.RELEASE_TYPE }}" == "release" ]]; then
+            EXPECTED_TAG="v${{ steps.release-type.outputs.VERSION }}"
+            echo "🔍 Verifying release tag: ${EXPECTED_TAG}"
+            
+            if git rev-parse --verify "refs/tags/${EXPECTED_TAG}" >/dev/null 2>&1; then
+              TAG_COMMIT=$(git rev-parse "refs/tags/${EXPECTED_TAG}")
+              HEAD_COMMIT=$(git rev-parse HEAD)
+              
+              echo "🏷️ Tag commit: ${TAG_COMMIT}"
+              echo "📍 HEAD commit: ${HEAD_COMMIT}"
+              
+              if [[ "${TAG_COMMIT}" == "${HEAD_COMMIT}" ]]; then
+                echo "✅ Tag points to current commit"
+              else
+                echo "❌ Tag-commit mismatch detected"
+                echo "This may cause 'future tag' errors in the packager"
+                exit 1
+              fi
+            else
+              echo "❌ Expected tag ${EXPECTED_TAG} not found"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Git state synchronized and verified"
+          
+      - name: Pre-packaging verification
+        if: steps.release-type.outputs.RELEASE_TYPE != 'skip' && !(steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name == 'push' && github.ref_name == 'main')
+        run: |
+          echo "🔍 Pre-packaging state check:"
+          echo "📋 Release Type: ${{ steps.release-type.outputs.RELEASE_TYPE }}"
+          echo "📝 Version: ${{ steps.release-type.outputs.VERSION }}"
+          echo "🏷️ Is Tagged: ${{ steps.release-type.outputs.IS_TAGGED }}"
+          echo "🌿 Branch: ${{ github.ref_name }}"
+          echo "🔗 Ref: ${{ github.ref }}"
+          echo "📦 Package name will be: GuildAchieves-v${{ steps.release-type.outputs.VERSION }}"
+          echo "🏷️ Current git tags on HEAD:"
+          git tag --points-at HEAD || echo "❌ No tags found on HEAD"
+          echo "🏷️ Tag detection by git describe:"
+          git describe --tags --exact-match HEAD 2>/dev/null && echo "✅ Tag detected" || echo "❌ No exact tag match"
+          echo "🏷️ Git status:"
+          git status --porcelain || echo "Working tree clean"
+          echo "🕐 Current system time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "🔑 CF_API_KEY present: ${{ secrets.CF_API_KEY != '' }}"
+          echo ""
+          echo "🚀 Launching BigWigsMods packager..."
+          
+      - name: Final packager preparation
+        if: steps.release-type.outputs.RELEASE_TYPE != 'skip' && !(steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name == 'push' && github.ref_name == 'main')
+        run: |
+          echo "🔧 Final preparation for BigWigsMods packager..."
+          
+          # Ensure we're on the correct commit for release builds
+          if [[ "${{ steps.release-type.outputs.RELEASE_TYPE }}" == "release" ]]; then
+            EXPECTED_TAG="v${{ steps.release-type.outputs.VERSION }}"
+            echo "📍 Checking out tag: ${EXPECTED_TAG}"
+            git checkout "${EXPECTED_TAG}"
+            
+            # Verify we're at the expected commit
+            CURRENT_COMMIT=$(git rev-parse HEAD)
+            TAG_COMMIT=$(git rev-parse "${EXPECTED_TAG}")
+            
+            if [[ "${CURRENT_COMMIT}" == "${TAG_COMMIT}" ]]; then
+              echo "✅ Successfully checked out tag commit: ${CURRENT_COMMIT}"
+            else
+              echo "❌ Checkout verification failed"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Ready for packaging"
+          
+      - name: Skip packaging for main branch (GitHub Release will trigger it)
+        if: steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name == 'push' && github.ref_name == 'main'
+        run: |
+          echo "🔄 Main branch push detected - creating GitHub Release instead of direct packaging"
+          echo "📋 This will trigger a release event that handles packaging with proper tag timing"
+          echo "🚀 GitHub Release creation will follow, triggering the release workflow"
+          echo "✅ This avoids 'future tag' issues with BigWigsMods packager"
+          
+      - name: Package addon
+        if: steps.release-type.outputs.RELEASE_TYPE != 'skip' && !(steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name == 'push' && github.ref_name == 'main')
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -g ${{ env.GAME_VERSIONS }} -p 1416033 -n "GuildAchieves-v${{ steps.release-type.outputs.VERSION }}"
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Debug packaging results
+        if: always()
+        run: |
+          echo "🔑 CF_API_KEY present: ${{ secrets.CF_API_KEY != '' }}"
+          echo "🎯 Game versions: ${{ env.GAME_VERSIONS }}"
+          echo "🆔 CurseForge Project ID: 1416033"
+          echo "📋 Our release type determination: ${{ steps.release-type.outputs.RELEASE_TYPE }}"
+          echo "📝 Final version used: ${{ steps.release-type.outputs.VERSION }}"
+          echo "🏷️ Is Tagged: ${{ steps.release-type.outputs.IS_TAGGED }}"
+          echo "🌿 Branch: ${{ github.ref_name }}"
+          echo "🔗 Ref: ${{ github.ref }}"
+          
+          if [[ "${{ steps.release-type.outputs.RELEASE_TYPE }}" == "release" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]]; then
+            echo ""
+            echo "🔄 MAIN BRANCH WORKFLOW:"
+            echo "   ✅ Created GitHub Release → Will trigger release event"
+            echo "   ⏳ Release event will handle CurseForge packaging"
+            echo "   🎯 This avoids 'future tag' detection issues"
+            echo ""
+            echo "🔗 Check for new GitHub Release at: https://github.com/${{ github.repository }}/releases"
+            echo "🔗 After release event runs, check CurseForge: https://www.curseforge.com/wow/addons/guild-achieves/files"
+          else
+            echo "📦 Direct packaging completed"
+            echo "🔧 Packager args used: -g ${{ env.GAME_VERSIONS }} -p 1416033 -n GuildAchieves-v${{ steps.release-type.outputs.VERSION }}"
+            echo "🏷️ Git tags on current commit:"
+            git tag --points-at HEAD || echo "No tags found"
+            echo "🏷️ Recent git tags for this version family:"
+            CURRENT_VERSION="${{ steps.release-type.outputs.VERSION }}"
+            BASE_VERSION=$(echo "${CURRENT_VERSION}" | sed 's/[a-z]*$//')
+            git tag --sort=-version:refname | grep -E "^v?${BASE_VERSION}[a-z]*$" | head -5 || echo "No matching tags found"
+            echo ""
+            echo "🔗 Check uploads at: https://www.curseforge.com/wow/addons/guild-achieves/files"
+            echo "📁 Looking for .zip files:"
+            find . -name "*.zip" 2>/dev/null || echo "No zip files found"
+          fi
+          
+          echo ""
+          echo "ℹ️  Release Process Summary:"
+          echo "   - GitHub Release creation → Automatic CurseForge upload via release event"
+          echo "   - Main branch push → Creates GitHub Release → Triggers release event → CurseForge upload"  
+          echo "   - Feature branches → Direct alpha builds to CurseForge"
+          
+      - name: Extract changelog for current version
+        id: changelog
+        if: steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name != 'release'
+        run: |
+          # Extract the changelog content for the current version
+          RELEASE_VERSION="${{ steps.release-type.outputs.VERSION }}"
+          
+          # For hotfix versions (1.0.0a, 1.0.0b, etc.), use the base version (1.0.0) for changelog
+          BASE_VERSION=$(echo "${RELEASE_VERSION}" | sed 's/[a-z]*$//')
+          echo "📝 Release version: ${RELEASE_VERSION}"
+          echo "📝 Using base version for changelog: ${BASE_VERSION}"
+          
+          # Check if CHANGELOG.txt exists
+          if [[ -f "CHANGELOG.txt" ]]; then
+            # Read changelog and extract content for the base version
+            awk -v version="$BASE_VERSION" '
+            BEGIN { 
+              found = 0; 
+              content = ""; 
+              in_version = 0;
+            }
+            /^## Version / { 
+              if (found && in_version) {
+                # We hit the next version, stop processing
+                exit;
+              }
+              if ($0 ~ version || gsub(/^## Version /, "") == version) {
+                found = 1; 
+                in_version = 1;
+                next; # Skip the version header itself
+              }
+            }
+            found && in_version { 
+              if (content != "") content = content "\n";
+              content = content $0;
+            }
+            END { 
+              if (content != "") {
+                print content;
+              } else {
+                print "No changelog content found for version " version;
+              }
+            }
+            ' CHANGELOG.txt > changelog_content.txt
+          else
+            echo "Initial release of Guild Achieves - Automatically congratulates guildies on achievements with humorous messages!" > changelog_content.txt
+          fi
+          
+          # Store the changelog content in output
+          {
+            echo 'CHANGELOG_CONTENT<<EOF'
+            cat changelog_content.txt
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+          
+          echo "📝 Extracted changelog for release ${RELEASE_VERSION} using base version ${BASE_VERSION}"
+          echo "Preview:"
+          head -10 changelog_content.txt
+          
+      - name: Extract release description for release events
+        id: release-description
+        if: github.event_name == 'release'
+        run: |
+          # For release events, use the release body as changelog content
+          echo "📝 Using GitHub Release description as changelog content"
+          {
+            echo 'CHANGELOG_CONTENT<<EOF'
+            echo "${{ github.event.release.body }}"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+          
+      - name: Create GitHub Release for main branch pushes (triggers packaging via release event)
+        if: steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name == 'push' && github.ref_name == 'main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.release-type.outputs.VERSION }}
+          name: Guild Achieves v${{ steps.release-type.outputs.VERSION }}
+          body: |
+            ## Guild Achieves v${{ steps.release-type.outputs.VERSION }}
+            
+            ${{ steps.changelog.outputs.CHANGELOG_CONTENT || steps.release-description.outputs.CHANGELOG_CONTENT }}
+            
+            ---
+            
+            ### 📦 Installation
+            1. Download the latest release
+            2. Extract to your WoW AddOns folder  
+            3. Restart World of Warcraft
+            
+            ### 🎮 Supported Versions
+            - **Mists of Pandaria Classic** (5.5.0) 
+            - **World of Warcraft Retail** (11.2.5+)
+            
+            ### 📥 Download
+            Available on [CurseForge](https://www.curseforge.com/wow/addons/guild-achieves)
+            
+            ### 📋 Full Changelog
+            See [CHANGELOG.txt](https://github.com/${{ github.repository }}/blob/v${{ steps.release-type.outputs.VERSION }}/CHANGELOG.txt) for complete version history.
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          
+      - name: Fallback packaging if PAT_TOKEN not available  
+        if: steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name == 'push' && github.ref_name == 'main'
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -g ${{ env.GAME_VERSIONS }} -p 1416033 -n "GuildAchieves-v${{ steps.release-type.outputs.VERSION }}"
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Fallback notification
+        if: steps.release-type.outputs.RELEASE_TYPE == 'release' && github.event_name == 'push' && github.ref_name == 'main'
+        run: |
+          echo "🔧 Direct CurseForge packaging completed"
+          echo "✅ Check CurseForge for upload: https://www.curseforge.com/wow/addons/guild-achieves/files"
+          echo ""
+          echo "💡 For automatic release event triggering, configure PAT_TOKEN:"
+          echo "   1. Go to GitHub → Settings → Developer settings → Personal access tokens"
+          echo "   2. Create token with 'contents:write' and 'metadata:read' permissions"
+          echo "   3. Add as repository secret named 'PAT_TOKEN'"
+          echo "   4. This enables GitHub Release creation to trigger release events"
+          
+  build-summary:
+    runs-on: ubuntu-latest
+    needs: package
+    if: always()
+    
+    steps:
+      - name: Build Summary
+        run: |
+          echo "## 📦 Guild Achieves Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch/Tag:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.package.outputs.version || '❓ Unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Target Versions:** MOP 5.5.0, Retail 11.2.5+" >> $GITHUB_STEP_SUMMARY
+          echo "**CurseForge Project:** 1416033 (guild-achieves)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Explain CurseForge release type
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "**CurseForge Release Type:** 🟢 Release" >> $GITHUB_STEP_SUMMARY
+            echo "*(Triggered by GitHub Release creation)*" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.package.outputs.release-type }}" == "release" && "${{ github.event_name }}" == "push" ]]; then
+            echo "**CurseForge Release Type:** 🟢 Release (from main branch push)" >> $GITHUB_STEP_SUMMARY
+            echo "*(Direct release packaging from main branch)*" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "**CurseForge Release Type:** 🟡 Alpha (feature branch)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**CurseForge Release Type:** 🟡 Alpha (feature branch)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.package.result }}" == "success" ]]; then
+            echo "### ✅ Build Status: Success" >> $GITHUB_STEP_SUMMARY
+            
+            if [[ "${{ github.event_name }}" == "release" ]]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "🚀 **Release build** - Available on [CurseForge](https://www.curseforge.com/wow/addons/guild-achieves)" >> $GITHUB_STEP_SUMMARY
+            elif [[ "${{ needs.package.outputs.release-type }}" == "release" && "${{ github.event_name }}" == "push" ]]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "🚀 **Release build** - Available on [CurseForge](https://www.curseforge.com/wow/addons/guild-achieves)" >> $GITHUB_STEP_SUMMARY
+              echo "Uploaded directly from main branch push" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "" >> $GITHUB_STEP_SUMMARY  
+              echo "🧪 **Alpha build** - Available on [CurseForge](https://www.curseforge.com/wow/addons/guild-achieves) for testing" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "### ❌ Build Status: Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Check the package job logs for details." >> $GITHUB_STEP_SUMMARY
+          fi
