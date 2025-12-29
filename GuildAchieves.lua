@@ -669,7 +669,7 @@ local function CreateMinimapButton()
 	
 	local dataObject = LDB:NewDataObject("GuildAchieves", {
 		type = "launcher",
-		icon = "Interface\\Icons\\Achievement_guildperk_everybodysfriend",
+		icon = "Interface\\AddOns\\GuildAchieves\\icon",
 		OnClick = function(self, button)
 			if button == "LeftButton" then
 				-- Toggle enabled state
