@@ -398,12 +398,14 @@ jobs:
       - name: Extract release description for release events
         id: release-description
         if: github.event_name == 'release'
+        env:
+          RELEASE_BODY: ${{ github.event.release.body }}
         run: |
           # For release events, use the release body as changelog content
           echo "📝 Using GitHub Release description as changelog content"
           {
             echo 'CHANGELOG_CONTENT<<EOF'
-            echo "${{ github.event.release.body }}"
+            printf '%s\n' "$RELEASE_BODY"
             echo 'EOF'
           } >> $GITHUB_OUTPUT
           
