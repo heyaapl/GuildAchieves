@@ -381,7 +381,7 @@ jobs:
             }
             ' CHANGELOG.txt > changelog_content.txt
           else
-            echo "Initial release of Guild Achieves - Automatically congratulates guildies on achievements with humorous messages!" > changelog_content.txt
+            echo "Initial release of Guild Achieve Congratulator - Automatically congratulates guildies on achievements with humorous messages!" > changelog_content.txt
           fi
           
           # Store the changelog content in output
@@ -412,9 +412,9 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.release-type.outputs.VERSION }}
-          name: Guild Achieves v${{ steps.release-type.outputs.VERSION }}
+          name: Guild Achieve Congratulator v${{ steps.release-type.outputs.VERSION }}
           body: |
-            ## Guild Achieves v${{ steps.release-type.outputs.VERSION }}
+            ## Guild Achieve Congratulator v${{ steps.release-type.outputs.VERSION }}
             
             ${{ steps.changelog.outputs.CHANGELOG_CONTENT || steps.release-description.outputs.CHANGELOG_CONTENT }}
             
@@ -461,6 +461,176 @@ jobs:
           echo "   3. Add as repository secret named 'PAT_TOKEN'"
           echo "   4. This enables GitHub Release creation to trigger release events"
           
+      - name: Send Discord Notification
+        if: github.event_name == 'release'
+        run: |
+          # Extract changelog summary for Discord
+          VERSION="${{ steps.release-type.outputs.VERSION }}"
+          
+          # For hotfix versions, always use base version for changelog lookup
+          BASE_VERSION=$(echo "${VERSION}" | sed 's/[a-z]*$//')
+          IS_HOTFIX=""
+          if [[ "${VERSION}" != "${BASE_VERSION}" ]]; then
+            IS_HOTFIX="true"
+            echo "🔍 Hotfix detected: ${VERSION} → using base version ${BASE_VERSION} for changelog"
+          fi
+          
+          # Create Discord-friendly changelog summary using base version
+          if [[ "$BASE_VERSION" == "1.0.0" ]]; then
+            CHANGELOG_SUMMARY="**INITIAL RELEASE** - The Guild Achieve Congratulator is here!\n\n**🎉 100 Unique Messages Per Category** - Sarcastic, funny congratulations for every achievement type\n**🎯 Level Milestones** - Extra roasts for Levels 10-90, including the infamous 85-90 grind\n**⚙️ Customizable Settings** - Toggle categories, adjust delay, test messages\n**🗺️ Minimap Button** - Quick access to all settings\n\n**Over 2,000 unique messages** across all categories!"
+          else
+            # For other versions, extract from changelog using base version
+            echo "🔍 Extracting changelog summary for base version: ${BASE_VERSION}"
+            
+            # Extract multiple lines from changelog for richer content
+            CHANGELOG_SUMMARY=$(awk -v version="$BASE_VERSION" '
+            BEGIN { 
+              found = 0; 
+              content = ""; 
+              in_version = 0;
+              line_count = 0;
+            }
+            /^## Version / { 
+              if (found && in_version) {
+                exit;
+              }
+              if ($0 ~ version) {
+                found = 1; 
+                in_version = 1;
+                next;
+              }
+            }
+            found && in_version && NF > 0 && line_count < 8 { 
+              if (content == "" && $0 ~ /^\s*$/) next;
+              if (content != "") content = content "\n";
+              content = content $0;
+              line_count++;
+            }
+            END { 
+              if (content != "") {
+                print content;
+              } else {
+                print "New version released with improvements and fixes!";
+              }
+            }
+            ' CHANGELOG.txt)
+            
+            # Clean up the extracted content
+            CHANGELOG_SUMMARY=$(echo "$CHANGELOG_SUMMARY" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+            
+            # Fallback if changelog extraction fails
+            if [[ -z "$CHANGELOG_SUMMARY" || "$CHANGELOG_SUMMARY" == "New version released with improvements and fixes!" ]]; then
+              if [[ "${{ github.event_name }}" == "release" ]]; then
+                RELEASE_BODY_SUMMARY=$(echo "${{ github.event.release.body }}" | head -3 | grep -E '^\*\*.*\*\*' | head -1 | sed 's/^[*#]*//' | sed 's/^\s*//')
+                if [[ -n "$RELEASE_BODY_SUMMARY" ]]; then
+                  CHANGELOG_SUMMARY="$RELEASE_BODY_SUMMARY"
+                fi
+              fi
+            fi
+          fi
+          
+          # Add hotfix indicator to summary if this is a hotfix
+          if [[ "$IS_HOTFIX" == "true" ]]; then
+            HOTFIX_SUFFIX=$(echo "${VERSION}" | sed "s/^${BASE_VERSION}//")
+            CHANGELOG_SUMMARY="$CHANGELOG_SUMMARY\n\n🔧 **Hotfix ${HOTFIX_SUFFIX}**: Bug fixes and stability improvements"
+          fi
+          
+          # Get current date and create JSON payload
+          CURRENT_DATE=$(date -u '+%B %d, %Y')
+          CURRENT_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          
+          echo "🔍 Discord notification details:"
+          echo "📦 Version: v$VERSION"
+          echo "📋 Base version for changelog: $BASE_VERSION"
+          echo "🔧 Is hotfix: ${IS_HOTFIX:-false}"
+          echo "📝 Changelog summary preview:"
+          printf "%s\n" "$CHANGELOG_SUMMARY" | head -3
+          
+          # Create version description
+          VERSION_DESCRIPTION="A new version of Guild Achieve Congratulator has been released!"
+          if [[ "$IS_HOTFIX" == "true" ]]; then
+            HOTFIX_SUFFIX=$(echo "${VERSION}" | sed "s/^${BASE_VERSION}//")
+            VERSION_DESCRIPTION="Hotfix ${HOTFIX_SUFFIX} released with bug fixes and improvements!"
+          fi
+          
+          # Create field name for changelog
+          if [[ "$IS_HOTFIX" == "true" ]]; then
+            CHANGELOG_FIELD_NAME="📋 Changelog (v${BASE_VERSION} features)"
+          else
+            CHANGELOG_FIELD_NAME="📋 Changelog Summary"
+          fi
+          
+          # Convert \n to actual newlines and write to temp file
+          printf "%s\n" "$CHANGELOG_SUMMARY" > /tmp/changelog_content.txt
+          
+          # Create Discord webhook payload using jq with proper multiline handling
+          jq -n \
+            --arg title "🏆 Guild Achieve Congratulator - New Release Available!" \
+            --arg description "$VERSION_DESCRIPTION" \
+            --arg version "v$VERSION" \
+            --arg date "$CURRENT_DATE" \
+            --arg changelog_field_name "$CHANGELOG_FIELD_NAME" \
+            --rawfile changelog /tmp/changelog_content.txt \
+            --arg timestamp "$CURRENT_TIMESTAMP" \
+            '{
+              "embeds": [{
+                "title": $title,
+                "description": $description,
+                "color": 16766720,
+                "fields": [
+                  {
+                    "name": "📦 Version",
+                    "value": $version,
+                    "inline": true
+                  },
+                  {
+                    "name": "📅 Release Date", 
+                    "value": $date,
+                    "inline": true
+                  },
+                  {
+                    "name": "📈 Downloads",
+                    "value": "[CurseForge Page](https://www.curseforge.com/wow/addons/guild-achieves)",
+                    "inline": true
+                  },
+                  {
+                    "name": $changelog_field_name,
+                    "value": $changelog,
+                    "inline": false
+                  }
+                ],
+                "footer": {
+                  "text": "Guild Achieve Congratulator",
+                  "icon_url": "https://media.forgecdn.net/avatars/thumbnails/1585/780/64/64/639026285156936467.png"
+                },
+                "timestamp": $timestamp
+              }]
+            }' > discord_payload.json
+          
+          # Clean up temp file
+          rm -f /tmp/changelog_content.txt
+          
+          echo "📋 Discord payload created:"
+          head -10 discord_payload.json
+          
+          # Send to Discord webhook
+          echo "🚀 Sending Discord notification..."
+          DISCORD_RESPONSE=$(curl -s -w "%{http_code}" -H "Content-Type: application/json" \
+               -X POST \
+               -d @discord_payload.json \
+               "${{ secrets.DISCORD_WEBHOOK }}")
+          
+          HTTP_CODE=${DISCORD_RESPONSE: -3}
+          RESPONSE_BODY=${DISCORD_RESPONSE%???}
+          
+          if [[ "$HTTP_CODE" -eq 204 ]]; then
+            echo "✅ Discord notification sent successfully for version $VERSION"
+          else
+            echo "❌ Discord webhook failed with HTTP $HTTP_CODE"
+            echo "Response: $RESPONSE_BODY"
+            # Don't fail the workflow for Discord issues
+          fi
+          
   build-summary:
     runs-on: ubuntu-latest
     needs: package
@@ -469,7 +639,7 @@ jobs:
     steps:
       - name: Build Summary
         run: |
-          echo "## 📦 Guild Achieves Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Guild Achieve Congratulator Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Branch/Tag:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ needs.package.outputs.version || '❓ Unknown' }}" >> $GITHUB_STEP_SUMMARY

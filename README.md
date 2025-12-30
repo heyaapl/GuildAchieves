@@ -2,18 +2,43 @@
 
 **Automatically congratulates your guildies on their achievements with hilarious, sarcastic messages!**
 
-When a guild member earns an achievement, Guild Achieves waits 1-3 seconds (to seem human) and then sends a randomly selected funny congratulation to guild chat. With **800+ unique messages** across all achievement categories, your guild chat will never be boring again!
+When a guild member earns an achievement, Guild Achieves waits 1-3 seconds (to seem human) and then sends a randomly selected funny congratulation to guild chat. With **950+ unique messages** across all achievement categories, your guild chat will never be boring again!
 
 ---
 
 ## Features
 
-### 🎯 Automatic Achievement Detection
-- Listens for guild achievement announcements
-- Automatically categorizes achievements (Levels, Dungeons, Raids, PvP, Professions, etc.)
-- Smart delay of 1-3 seconds before responding (so it doesn't look like a bot!)
+### 🎯 Smart Achievement Batching (NEW in v1.1.0!)
 
-### 😂 800+ Hilarious Messages
+No more spam! The addon intelligently handles multiple achievements:
+
+- **3-second collection window** - Gathers all achievements before responding
+- **Multi-achievement detection** - When one player earns multiple achievements at once
+- **Group achievement detection** - When raid/dungeon groups earn the same achievement
+- **Smart name formatting** - "Player1, Player2, Player3, and 22 others" for large groups
+
+### 🎉 Combo Messages - One Player, Multiple Achievements
+
+When someone levels up, finishes a dungeon, AND completes a questline all at once:
+> "WHOA {player}! 3 achievements at ONCE?! Were you SAVING those up?! Show-off!"
+
+**40 unique combo messages** for overachievers!
+
+### 🏆 Group Celebration Messages
+
+Different message pools based on group size - no more spamming 25 individual messages when a raid kills a boss!
+
+| Group Size | Type | Example |
+|------------|------|---------|
+| 2-4 players | Small Group | "Look at {players} being COMPETENT together! Squad goals!" |
+| 5-9 players | Dungeon Party | "DUNGEON DOMINATION! The instance didn't stand a CHANCE!" |
+| 10-19 players | Raid | "TEN-MAN TAKEOVER! COORDINATION LEVEL: EXPERT!" |
+| 20+ players | Large Raid | "TWENTY-FIVE MAN DOMINATION! THE GUILD IS UNSTOPPABLE!" |
+
+**110 unique group messages** across all sizes!
+
+### 😂 800+ Individual Achievement Messages
+
 Every achievement category has **40 unique sarcastic/funny responses**:
 
 | Category | Messages | Humor Style |
@@ -46,13 +71,6 @@ Every achievement category has **40 unique sarcastic/funny responses**:
 - **Cooldown Control** - Prevent spam when multiple achievements happen
 - **Self-Congratulation** - Option to congratulate yourself too!
 - **Debug Mode** - See what's happening under the hood
-
-### 🎨 ElvUI-Style Interface
-
-Three beautiful UI templates to match your setup:
-- **Default** - Classic gold on black
-- **Transparent** - 70% opacity with white text  
-- **Class Color** - Your class colors!
 
 ### 🗺️ Minimap Button
 
@@ -101,12 +119,24 @@ Three beautiful UI templates to match your setup:
 **When someone maxes a profession:**
 > "Profession master {player}! Your skill bar is MAXED!"
 
+**When one player earns multiple achievements at once:**
+> "ACHIEVEMENT AVALANCHE from {player}! 4 at once! Were you HOARDING?!"
+
+**When a dungeon group completes an achievement together:**
+> "DUNGEON CLEARED! {players} earned {achievement}! The mobs are CRYING!"
+
+**When a 25-man raid kills a boss:**
+> "FULL RAID ACHIEVEMENT! 25 people! {achievement}! THIS IS WHAT PEAK PERFORMANCE LOOKS LIKE!"
+
 ---
 
 ## FAQ
 
 **Q: Will this spam guild chat?**
-A: No! There's a configurable cooldown (default 5 seconds) between messages. If multiple guildies get achievements rapidly, only one message will be sent.
+A: No! The smart batching system collects achievements for 3 seconds before responding. Multiple achievements from one player become one message. Raid achievements for 25 players become one celebration!
+
+**Q: What if my raid kills a boss and everyone gets the achievement?**
+A: You'll get ONE epic group celebration message instead of 25 individual spam messages!
 
 **Q: Can I turn off specific categories?**
 A: Yes! Every category can be individually enabled/disabled in the settings.

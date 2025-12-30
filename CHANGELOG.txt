@@ -1,3 +1,42 @@
+## Version 1.1.0 - Smart Batching Update
+
+### 🎯 Smart Achievement Batching
+No more spam! The addon now intelligently batches achievements:
+- **3-second collection window** - Gathers all achievements before responding
+- **One player, multiple achievements?** - Combined into a single hilarious message
+- **Raid boss kill?** - One celebration for the whole group instead of 25 spam messages!
+
+### 🎉 Combo Messages - Multi-Achievement
+When a single player earns multiple achievements at once (level up + dungeon + quest):
+> "WHOA {player}! 3 achievements at ONCE?! Were you SAVING those up?! Show-off!"
+
+**40 unique combo messages** for overachievers!
+
+### 🏆 Group Celebration Messages
+Different message pools based on group size:
+
+| Group Size | Type | Example |
+|------------|------|---------|
+| 2-4 players | Small Group | "Squad goals ACHIEVED! LITERALLY!" |
+| 5-9 players | Dungeon Party | "DUNGEON DOMINATION! The instance didn't stand a CHANCE!" |
+| 10-19 players | Raid | "TEN-MAN TAKEOVER! COORDINATION LEVEL: EXPERT!" |
+| 20+ players | Large Raid | "TWENTY-FIVE MAN DOMINATION! THE GUILD IS UNSTOPPABLE!" |
+
+**110 unique group messages** across all sizes!
+
+### 🧠 Smart Name Handling
+- For groups of 5 or fewer: Lists all names ("Alice, Bob, and Charlie")
+- For larger groups: "Player1, Player2, Player3, and 22 others"
+- Automatic message truncation to fit WoW's 255 character limit
+
+### 📊 Total Message Count
+- **800+ individual achievement messages** (unchanged)
+- **40 multi-achievement combo messages** (NEW)
+- **110 group celebration messages** (NEW)
+- **950+ total unique messages!**
+
+---
+
 ## Version 1.0.0 - Initial Release
 
 ### 🎉 First Release!
@@ -50,4 +89,3 @@ Guild Achieves automatically congratulates your guildies on their achievements w
 ### Slash Commands
 - /guildachieves - Open settings
 - /ga - Open settings (shortcut)
-

@@ -14,6 +14,20 @@ local defaults
 local lastMessageTime = 0
 local MESSAGE_COOLDOWN = 5 -- seconds between messages
 
+-- Achievement batching system
+-- Collects achievements over a window to handle multiple achievements at once
+local BATCH_WINDOW = 3 -- seconds to collect achievements before sending
+local achievementBatch = {
+	isCollecting = false,
+	startTime = 0,
+	-- playerAchievements[playerName] = { {achievementID, achievementName, category, level}, ... }
+	playerAchievements = {},
+	-- achievementPlayers[achievementID] = { playerName1, playerName2, ... }
+	achievementPlayers = {},
+	-- achievementInfo[achievementID] = { name = "...", category = "...", level = nil }
+	achievementInfo = {},
+}
+
 -- Debug system
 local function DebugPrint(...)
 	if GuildAchieves and GuildAchieves.db and GuildAchieves.db.profile and GuildAchieves.db.profile.DebugMode then
@@ -281,6 +295,286 @@ local function GetRandomMessage(category, level, playerName, achievementName)
 	return message
 end
 
+-- Format a list of names nicely (e.g., "Alice, Bob, and Charlie")
+local function FormatNameList(names)
+	local count = #names
+	if count == 0 then return "" end
+	if count == 1 then return names[1] end
+	if count == 2 then return names[1] .. " and " .. names[2] end
+	
+	-- For 3+ names
+	local result = ""
+	for i = 1, count - 1 do
+		result = result .. names[i] .. ", "
+	end
+	result = result .. "and " .. names[count]
+	return result
+end
+
+-- Get combo message for one player earning multiple achievements
+local function GetMultiAchievementMessage(playerName, achievements)
+	if not GuildAchievesData or not GuildAchievesData.Combos or not GuildAchievesData.Combos.MultiAchievement then
+		-- Fallback if combo messages not loaded
+		local achieveNames = {}
+		for _, achieve in ipairs(achievements) do
+			table.insert(achieveNames, achieve.name)
+		end
+		return playerName .. " just earned " .. #achievements .. " achievements: " .. table.concat(achieveNames, ", ") .. "! Overachiever!"
+	end
+	
+	local messages = GuildAchievesData.Combos.MultiAchievement
+	local message = messages[math.random(#messages)]
+	
+	-- Build achievement list and categories
+	local achieveNames = {}
+	local categories = {}
+	local hasLevel = false
+	local levelNum = nil
+	
+	for _, achieve in ipairs(achievements) do
+		table.insert(achieveNames, achieve.name)
+		if achieve.category == "Level" then
+			hasLevel = true
+			levelNum = achieve.level
+		end
+		categories[achieve.category] = true
+	end
+	
+	-- Count unique categories
+	local categoryCount = 0
+	local categoryList = {}
+	for cat, _ in pairs(categories) do
+		categoryCount = categoryCount + 1
+		table.insert(categoryList, cat)
+	end
+	
+	-- Replace placeholders
+	message = message:gsub("{player}", playerName)
+	message = message:gsub("{count}", tostring(#achievements))
+	message = message:gsub("{achievements}", FormatNameList(achieveNames))
+	message = message:gsub("{categories}", FormatNameList(categoryList))
+	message = message:gsub("{categoryCount}", tostring(categoryCount))
+	if levelNum then
+		message = message:gsub("{level}", tostring(levelNum))
+	end
+	
+	return message
+end
+
+-- Get group celebration message for multiple players earning the same achievement
+local function GetGroupAchievementMessage(achievementName, achievementCategory, players)
+	if not GuildAchievesData or not GuildAchievesData.Combos then
+		-- Fallback
+		return "Grats " .. FormatNameList(players) .. " on " .. achievementName .. "!"
+	end
+	
+	local messages
+	local playerCount = #players
+	
+	-- Pick appropriate message pool based on group size
+	if playerCount >= 20 and GuildAchievesData.Combos.LargeRaid then
+		messages = GuildAchievesData.Combos.LargeRaid
+	elseif playerCount >= 10 and GuildAchievesData.Combos.Raid then
+		messages = GuildAchievesData.Combos.Raid
+	elseif playerCount >= 5 and GuildAchievesData.Combos.Party then
+		messages = GuildAchievesData.Combos.Party
+	elseif GuildAchievesData.Combos.SmallGroup then
+		messages = GuildAchievesData.Combos.SmallGroup
+	else
+		return "Grats " .. FormatNameList(players) .. " on " .. achievementName .. "!"
+	end
+	
+	local message = messages[math.random(#messages)]
+	
+	-- For large groups, we might not list all names (chat limit)
+	local displayNames
+	if playerCount > 5 then
+		-- Show first few names + count
+		displayNames = players[1] .. ", " .. players[2] .. ", " .. players[3] .. ", and " .. (playerCount - 3) .. " others"
+	else
+		displayNames = FormatNameList(players)
+	end
+	
+	-- Replace placeholders
+	message = message:gsub("{players}", displayNames)
+	message = message:gsub("{player}", displayNames) -- alias
+	message = message:gsub("{count}", tostring(playerCount))
+	message = message:gsub("{achievement}", achievementName)
+	message = message:gsub("{category}", achievementCategory or "General")
+	
+	return message
+end
+
+-- Clear the achievement batch
+local function ClearBatch()
+	achievementBatch.isCollecting = false
+	achievementBatch.startTime = 0
+	achievementBatch.playerAchievements = {}
+	achievementBatch.achievementPlayers = {}
+	achievementBatch.achievementInfo = {}
+end
+
+-- Process the collected batch and send appropriate messages
+local function ProcessBatch()
+	DebugPrint("Processing achievement batch...")
+	
+	if not GuildAchieves.db.profile.IsEnabled then
+		DebugPrint("Addon disabled, clearing batch")
+		ClearBatch()
+		return
+	end
+	
+	-- Analyze the batch to determine the best way to congratulate
+	-- Priority: 
+	-- 1. If same achievement earned by multiple players, group them
+	-- 2. If one player earned multiple achievements, combine them
+	-- 3. Otherwise, send individual messages (but we shouldn't hit this often)
+	
+	local messagesToSend = {}
+	local processedPlayers = {}
+	local processedAchievements = {}
+	
+	-- First pass: Handle group achievements (same achievement, multiple players)
+	for achievementID, players in pairs(achievementBatch.achievementPlayers) do
+		if #players > 1 then
+			local info = achievementBatch.achievementInfo[achievementID]
+			if info then
+				-- Check if category is enabled
+				local categoryEnabled = GuildAchieves.db.profile.CategoryToggles[info.category] ~= false
+				if categoryEnabled then
+					local message = GetGroupAchievementMessage(info.name, info.category, players)
+					table.insert(messagesToSend, message)
+					
+					-- Mark these players as processed for this achievement
+					processedAchievements[achievementID] = true
+					for _, player in ipairs(players) do
+						if not processedPlayers[player] then
+							processedPlayers[player] = {}
+						end
+						processedPlayers[player][achievementID] = true
+					end
+				end
+			end
+		end
+	end
+	
+	-- Second pass: Handle multi-achievement players (one player, multiple achievements)
+	for playerName, achievements in pairs(achievementBatch.playerAchievements) do
+		-- Filter out already processed achievements
+		local unprocessedAchievements = {}
+		for _, achieve in ipairs(achievements) do
+			if not (processedPlayers[playerName] and processedPlayers[playerName][achieve.id]) then
+				-- Check if category is enabled
+				local categoryEnabled = GuildAchieves.db.profile.CategoryToggles[achieve.category] ~= false
+				if categoryEnabled then
+					table.insert(unprocessedAchievements, achieve)
+				end
+			end
+		end
+		
+		if #unprocessedAchievements > 1 then
+			-- Multiple achievements for this player - combine them
+			local message = GetMultiAchievementMessage(playerName, unprocessedAchievements)
+			table.insert(messagesToSend, message)
+		elseif #unprocessedAchievements == 1 then
+			-- Single achievement - use normal message
+			local achieve = unprocessedAchievements[1]
+			
+			-- Don't congratulate yourself unless enabled
+			if playerName == UnitName("player") and not GuildAchieves.db.profile.CongratsSelf then
+				DebugPrint("Self achievement, skipping (CongratsSelf disabled)")
+			else
+				local message = GetRandomMessage(achieve.category, achieve.level, playerName, achieve.name)
+				if message then
+					table.insert(messagesToSend, message)
+				end
+			end
+		end
+	end
+	
+	-- Send the messages with slight delays between them
+	local delay = 0.5 + math.random() * 1.5 -- Initial delay 0.5-2 seconds
+	
+	for i, message in ipairs(messagesToSend) do
+		C_Timer.After(delay, function()
+			if GuildAchieves.db.profile.IsEnabled then
+				-- Truncate message if too long (WoW chat limit is ~255 chars)
+				if #message > 250 then
+					message = message:sub(1, 247) .. "..."
+				end
+				SendChatMessage(message, "GUILD")
+				lastMessageTime = GetTime()
+				DebugPrint("Sent:", message)
+			end
+		end)
+		delay = delay + 0.3 -- Small gap between multiple messages
+	end
+	
+	-- Clear the batch
+	ClearBatch()
+	DebugPrint("Batch processing complete, sent", #messagesToSend, "messages")
+end
+
+-- Add an achievement to the current batch
+local function AddToBatch(playerName, achievementID, achievementName, category, level)
+	-- Initialize player's achievement list if needed
+	if not achievementBatch.playerAchievements[playerName] then
+		achievementBatch.playerAchievements[playerName] = {}
+	end
+	
+	-- Check if we already have this achievement for this player (prevent duplicates)
+	for _, existing in ipairs(achievementBatch.playerAchievements[playerName]) do
+		if existing.id == achievementID then
+			DebugPrint("Duplicate achievement in batch, skipping:", achievementName, "for", playerName)
+			return
+		end
+	end
+	
+	-- Add to player's achievements
+	table.insert(achievementBatch.playerAchievements[playerName], {
+		id = achievementID,
+		name = achievementName,
+		category = category,
+		level = level
+	})
+	
+	-- Initialize achievement's player list if needed
+	if not achievementBatch.achievementPlayers[achievementID] then
+		achievementBatch.achievementPlayers[achievementID] = {}
+	end
+	
+	-- Add player to this achievement's list
+	table.insert(achievementBatch.achievementPlayers[achievementID], playerName)
+	
+	-- Store achievement info
+	if not achievementBatch.achievementInfo[achievementID] then
+		achievementBatch.achievementInfo[achievementID] = {
+			name = achievementName,
+			category = category,
+			level = level
+		}
+	end
+	
+	DebugPrint("Added to batch:", playerName, "-", achievementName, "(", category, ")")
+end
+
+-- Start collecting achievements if not already
+local function StartBatchCollection()
+	if not achievementBatch.isCollecting then
+		achievementBatch.isCollecting = true
+		achievementBatch.startTime = GetTime()
+		
+		-- Schedule batch processing after the window
+		C_Timer.After(BATCH_WINDOW, function()
+			if achievementBatch.isCollecting then
+				ProcessBatch()
+			end
+		end)
+		
+		DebugPrint("Started batch collection, will process in", BATCH_WINDOW, "seconds")
+	end
+end
+
 -- Handle guild achievement event
 local function OnGuildAchievement(playerName, achievementID)
 	if not GuildAchieves.db.profile.IsEnabled then
@@ -288,54 +582,31 @@ local function OnGuildAchievement(playerName, achievementID)
 		return
 	end
 	
-	-- Check cooldown
+	-- Check cooldown (but still collect for batching to avoid missing group achievements)
 	local currentTime = GetTime()
 	if currentTime - lastMessageTime < MESSAGE_COOLDOWN then
-		DebugPrint("Cooldown active, skipping message")
-		return
-	end
-	
-	-- Don't congratulate yourself
-	if playerName == UnitName("player") and not GuildAchieves.db.profile.CongratsSelf then
-		DebugPrint("Self achievement, skipping (CongratsSelf disabled)")
-		return
+		DebugPrint("Cooldown active, but still collecting for batch")
+		-- Continue processing - we'll handle cooldown in batch processing
 	end
 	
 	-- Get achievement info
 	local _, achievementName = GetAchievementInfo(achievementID)
+	if not achievementName then
+		DebugPrint("Could not get achievement name for ID:", achievementID)
+		return
+	end
 	
 	-- Determine category
 	local category, level = GetAchievementCategoryInfo(achievementID)
 	DebugPrint("Achievement:", achievementName, "Category:", category, "Level:", level or "N/A")
 	
-	-- Check if this category is enabled
-	local categoryEnabled = true
-	if GuildAchieves.db.profile.CategoryToggles and GuildAchieves.db.profile.CategoryToggles[category] == false then
-		categoryEnabled = false
-		DebugPrint("Category", category, "is disabled")
-		return
-	end
+	-- Start batch collection if not already active
+	StartBatchCollection()
 	
-	-- Get message
-	local message = GetRandomMessage(category, level, playerName, achievementName)
-	if not message then
-		DebugPrint("No message generated")
-		return
-	end
-	
-	-- Random delay 1-3 seconds
-	local delay = 1 + math.random() * 2
-	DebugPrint("Sending message in", string.format("%.1f", delay), "seconds")
-	
-	C_Timer.After(delay, function()
-		-- Double-check we're still enabled
-		if not GuildAchieves.db.profile.IsEnabled then return end
-		
-		-- Send to guild chat
-		SendChatMessage(message, "GUILD")
-		lastMessageTime = GetTime()
-		DebugPrint("Sent:", message)
-	end)
+	-- Add this achievement to the batch
+	-- Note: We defer the self-check and category-enabled check to batch processing
+	-- This allows us to properly handle group achievements where we might be included
+	AddToBatch(playerName, achievementID, achievementName, category, level)
 end
 
 -- Event handler
@@ -669,7 +940,7 @@ local function CreateMinimapButton()
 	
 	local dataObject = LDB:NewDataObject("GuildAchieves", {
 		type = "launcher",
-		icon = "Interface\\AddOns\\GuildAchieves\\icon",
+		icon = "Interface\\Icons\\Achievement_guildperk_everybodysfriend",
 		OnClick = function(self, button)
 			if button == "LeftButton" then
 				-- Toggle enabled state
