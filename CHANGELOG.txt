@@ -1,3 +1,16 @@
+## Version 1.1.1 - Bug Fix
+
+### 🐛 Fixed Self-Congratulation Bug
+Fixed an issue where the addon would congratulate yourself when earning multiple achievements at once, even when "Congratulate Yourself" was disabled.
+
+**Now fixed:**
+- The `Congratulate Yourself` setting is properly respected in all scenarios:
+  - Single achievements
+  - Multiple achievements earned simultaneously
+  - Group achievements (you're now filtered out of the player list when disabled)
+
+---
+
 ## Version 1.1.0 - Smart Batching Update
 
 ### 🎯 Smart Achievement Batching

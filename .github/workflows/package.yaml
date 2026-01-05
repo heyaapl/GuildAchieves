@@ -477,64 +477,54 @@ jobs:
             echo "🔍 Hotfix detected: ${VERSION} → using base version ${BASE_VERSION} for changelog"
           fi
           
-          # Create Discord-friendly changelog summary using base version
-          if [[ "$BASE_VERSION" == "1.0.0" ]]; then
-            CHANGELOG_SUMMARY="**INITIAL RELEASE** - The Guild Achieve Congratulator is here!\n\n**🎉 100 Unique Messages Per Category** - Sarcastic, funny congratulations for every achievement type\n**🎯 Level Milestones** - Extra roasts for Levels 10-90, including the infamous 85-90 grind\n**⚙️ Customizable Settings** - Toggle categories, adjust delay, test messages\n**🗺️ Minimap Button** - Quick access to all settings\n\n**Over 2,000 unique messages** across all categories!"
-          else
-            # For other versions, extract from changelog using base version
-            echo "🔍 Extracting changelog summary for base version: ${BASE_VERSION}"
-            
-            # Extract multiple lines from changelog for richer content
-            CHANGELOG_SUMMARY=$(awk -v version="$BASE_VERSION" '
-            BEGIN { 
-              found = 0; 
-              content = ""; 
-              in_version = 0;
-              line_count = 0;
-            }
-            /^## Version / { 
-              if (found && in_version) {
-                exit;
-              }
-              if ($0 ~ version) {
-                found = 1; 
-                in_version = 1;
-                next;
-              }
-            }
-            found && in_version && NF > 0 && line_count < 8 { 
-              if (content == "" && $0 ~ /^\s*$/) next;
-              if (content != "") content = content "\n";
-              content = content $0;
-              line_count++;
-            }
-            END { 
-              if (content != "") {
-                print content;
-              } else {
-                print "New version released with improvements and fixes!";
-              }
-            }
-            ' CHANGELOG.txt)
-            
-            # Clean up the extracted content
-            CHANGELOG_SUMMARY=$(echo "$CHANGELOG_SUMMARY" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
-            
-            # Fallback if changelog extraction fails
-            if [[ -z "$CHANGELOG_SUMMARY" || "$CHANGELOG_SUMMARY" == "New version released with improvements and fixes!" ]]; then
-              if [[ "${{ github.event_name }}" == "release" ]]; then
-                RELEASE_BODY_SUMMARY=$(echo "${{ github.event.release.body }}" | head -3 | grep -E '^\*\*.*\*\*' | head -1 | sed 's/^[*#]*//' | sed 's/^\s*//')
-                if [[ -n "$RELEASE_BODY_SUMMARY" ]]; then
-                  CHANGELOG_SUMMARY="$RELEASE_BODY_SUMMARY"
-                fi
-              fi
-            fi
-          fi
+          # Create Discord-friendly changelog summary using pre-defined summaries
+          # This avoids parsing issues with special characters in changelog
+          case "$BASE_VERSION" in
+            "1.0.0")
+              cat > /tmp/changelog_summary.txt << 'SUMMARY_EOF'
+          **INITIAL RELEASE** - The Guild Achieve Congratulator is here!
           
-          # Add hotfix indicator to summary if this is a hotfix
+          **🎉 100 Unique Messages Per Category** - Sarcastic, funny congratulations for every achievement type
+          **🎯 Level Milestones** - Extra roasts for Levels 10-90, including the infamous 85-90 grind
+          **⚙️ Customizable Settings** - Toggle categories, adjust delay, test messages
+          **🗺️ Minimap Button** - Quick access to all settings
+          
+          **Over 2,000 unique messages** across all categories!
+          SUMMARY_EOF
+              ;;
+            "1.1.0")
+              cat > /tmp/changelog_summary.txt << 'SUMMARY_EOF'
+          **SMART BATCHING UPDATE** - No more spam!
+          
+          **🎯 Smart Achievement Batching** - 3-second collection window before responding
+          **🎉 Combo Messages** - One player earning multiple achievements gets ONE funny combined message
+          **🏆 Group Celebrations** - Raid boss kill sends ONE epic message instead of 25 spam messages
+          **📊 New Messages** - 40 combo + 110 group celebration messages added
+          
+          **950+ total unique messages!**
+          SUMMARY_EOF
+              ;;
+            "1.1.1")
+              cat > /tmp/changelog_summary.txt << 'SUMMARY_EOF'
+          **BUG FIX** - Self-Congratulation Fix
+          
+          🐛 **Fixed:** The addon no longer congratulates yourself when earning multiple achievements at once, even when "Congratulate Yourself" is disabled.
+          
+          The CongratsSelf setting is now properly respected for single achievements, multi-achievements, AND group achievements.
+          SUMMARY_EOF
+              ;;
+            *)
+              cat > /tmp/changelog_summary.txt << 'SUMMARY_EOF'
+          New version released with improvements and fixes! Check the changelog for details.
+          SUMMARY_EOF
+              ;;
+          esac
+          
+          # Add hotfix indicator if needed
           if [[ "$IS_HOTFIX" == "true" ]]; then
             HOTFIX_SUFFIX=$(echo "${VERSION}" | sed "s/^${BASE_VERSION}//")
-            CHANGELOG_SUMMARY="$CHANGELOG_SUMMARY\n\n🔧 **Hotfix ${HOTFIX_SUFFIX}**: Bug fixes and stability improvements"
+            echo "" >> /tmp/changelog_summary.txt
+            echo "🔧 **Hotfix ${HOTFIX_SUFFIX}**: Bug fixes and stability improvements" >> /tmp/changelog_summary.txt
           fi
           
           # Get current date and create JSON payload
@@ -546,7 +536,7 @@ jobs:
           echo "📋 Base version for changelog: $BASE_VERSION"
           echo "🔧 Is hotfix: ${IS_HOTFIX:-false}"
           echo "📝 Changelog summary preview:"
-          printf "%s\n" "$CHANGELOG_SUMMARY" | head -3
+          head -3 /tmp/changelog_summary.txt
           
           # Create version description
           VERSION_DESCRIPTION="A new version of Guild Achieve Congratulator has been released!"
@@ -562,9 +552,6 @@ jobs:
             CHANGELOG_FIELD_NAME="📋 Changelog Summary"
           fi
           
-          # Convert \n to actual newlines and write to temp file
-          printf "%s\n" "$CHANGELOG_SUMMARY" > /tmp/changelog_content.txt
-          
           # Create Discord webhook payload using jq with proper multiline handling
           jq -n \
             --arg title "🏆 Guild Achieve Congratulator - New Release Available!" \
@@ -572,7 +559,7 @@ jobs:
             --arg version "v$VERSION" \
             --arg date "$CURRENT_DATE" \
             --arg changelog_field_name "$CHANGELOG_FIELD_NAME" \
-            --rawfile changelog /tmp/changelog_content.txt \
+            --rawfile changelog /tmp/changelog_summary.txt \
             --arg timestamp "$CURRENT_TIMESTAMP" \
             '{
               "embeds": [{
@@ -610,7 +597,7 @@ jobs:
             }' > discord_payload.json
           
           # Clean up temp file
-          rm -f /tmp/changelog_content.txt
+          rm -f /tmp/changelog_summary.txt
           
           echo "📋 Discord payload created:"
           head -10 discord_payload.json

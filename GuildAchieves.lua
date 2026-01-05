@@ -435,6 +435,7 @@ local function ProcessBatch()
 	local processedAchievements = {}
 	
 	-- First pass: Handle group achievements (same achievement, multiple players)
+	local myName = UnitName("player")
 	for achievementID, players in pairs(achievementBatch.achievementPlayers) do
 		if #players > 1 then
 			local info = achievementBatch.achievementInfo[achievementID]
@@ -442,10 +443,31 @@ local function ProcessBatch()
 				-- Check if category is enabled
 				local categoryEnabled = GuildAchieves.db.profile.CategoryToggles[info.category] ~= false
 				if categoryEnabled then
-					local message = GetGroupAchievementMessage(info.name, info.category, players)
-					table.insert(messagesToSend, message)
+					-- Filter out self if CongratsSelf is disabled
+					local filteredPlayers = {}
+					for _, player in ipairs(players) do
+						if player == myName and not GuildAchieves.db.profile.CongratsSelf then
+							DebugPrint("Excluding self from group achievement:", info.name)
+						else
+							table.insert(filteredPlayers, player)
+						end
+					end
 					
-					-- Mark these players as processed for this achievement
+					-- Only send group message if there are still multiple players
+					if #filteredPlayers > 1 then
+						local message = GetGroupAchievementMessage(info.name, info.category, filteredPlayers)
+						table.insert(messagesToSend, message)
+					elseif #filteredPlayers == 1 then
+						-- Only one other person - send them an individual message instead
+						local playerName = filteredPlayers[1]
+						local message = GetRandomMessage(info.category, info.level, playerName, info.name)
+						if message then
+							table.insert(messagesToSend, message)
+						end
+					end
+					-- If filteredPlayers is empty (only self was in the list), send nothing
+					
+					-- Mark ALL original players as processed for this achievement
 					processedAchievements[achievementID] = true
 					for _, player in ipairs(players) do
 						if not processedPlayers[player] then
@@ -460,30 +482,31 @@ local function ProcessBatch()
 	
 	-- Second pass: Handle multi-achievement players (one player, multiple achievements)
 	for playerName, achievements in pairs(achievementBatch.playerAchievements) do
-		-- Filter out already processed achievements
-		local unprocessedAchievements = {}
-		for _, achieve in ipairs(achievements) do
-			if not (processedPlayers[playerName] and processedPlayers[playerName][achieve.id]) then
-				-- Check if category is enabled
-				local categoryEnabled = GuildAchieves.db.profile.CategoryToggles[achieve.category] ~= false
-				if categoryEnabled then
-					table.insert(unprocessedAchievements, achieve)
+		-- Check if this is the player themselves and CongratsSelf is disabled
+		local isSelf = playerName == UnitName("player")
+		if isSelf and not GuildAchieves.db.profile.CongratsSelf then
+			DebugPrint("Self achievements detected, skipping (CongratsSelf disabled) for", playerName)
+			-- Skip all processing for self if CongratsSelf is disabled
+		else
+			-- Filter out already processed achievements
+			local unprocessedAchievements = {}
+			for _, achieve in ipairs(achievements) do
+				if not (processedPlayers[playerName] and processedPlayers[playerName][achieve.id]) then
+					-- Check if category is enabled
+					local categoryEnabled = GuildAchieves.db.profile.CategoryToggles[achieve.category] ~= false
+					if categoryEnabled then
+						table.insert(unprocessedAchievements, achieve)
+					end
 				end
 			end
-		end
-		
-		if #unprocessedAchievements > 1 then
-			-- Multiple achievements for this player - combine them
-			local message = GetMultiAchievementMessage(playerName, unprocessedAchievements)
-			table.insert(messagesToSend, message)
-		elseif #unprocessedAchievements == 1 then
-			-- Single achievement - use normal message
-			local achieve = unprocessedAchievements[1]
 			
-			-- Don't congratulate yourself unless enabled
-			if playerName == UnitName("player") and not GuildAchieves.db.profile.CongratsSelf then
-				DebugPrint("Self achievement, skipping (CongratsSelf disabled)")
-			else
+			if #unprocessedAchievements > 1 then
+				-- Multiple achievements for this player - combine them
+				local message = GetMultiAchievementMessage(playerName, unprocessedAchievements)
+				table.insert(messagesToSend, message)
+			elseif #unprocessedAchievements == 1 then
+				-- Single achievement - use normal message
+				local achieve = unprocessedAchievements[1]
 				local message = GetRandomMessage(achieve.category, achieve.level, playerName, achieve.name)
 				if message then
 					table.insert(messagesToSend, message)
