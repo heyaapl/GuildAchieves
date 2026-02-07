@@ -14,6 +14,29 @@ local defaults
 local lastMessageTime = 0
 local MESSAGE_COOLDOWN = 5 -- seconds between messages
 
+-- BCC (Burning Crusade Classic) Detection
+-- In BCC, achievements don't exist, so we poll guild roster for milestone level-ups instead
+local isBCC = false
+do
+	local _, _, _, tocVersion = GetBuildInfo()
+	isBCC = (tocVersion >= 20000 and tocVersion < 30000)
+end
+
+-- BCC Level-Up Tracking System (session-only, no persistence)
+-- Only tracks online guild members while the addon player is online
+-- Clears tracked levels when players go offline to avoid tracking offline progress
+local bccTracker = {
+	onlineLevels = {},     -- [playerName] = level (only currently-online players)
+	ticker = nil,          -- C_Timer ticker for polling
+	POLL_INTERVAL = 30,    -- seconds between roster polls
+}
+
+-- BCC milestone levels that trigger congratulations
+local BCC_MILESTONES = {
+	[10] = true, [20] = true, [30] = true, [40] = true,
+	[50] = true, [58] = true, [60] = true, [70] = true,
+}
+
 -- Achievement batching system
 -- Collects achievements over a window to handle multiple achievements at once
 local BATCH_WINDOW = 3 -- seconds to collect achievements before sending
@@ -295,6 +318,29 @@ local function GetRandomMessage(category, level, playerName, achievementName)
 	return message
 end
 
+-- Get a BCC-specific milestone level-up message
+local function GetBCCLevelMessage(level, playerName)
+	if not GuildAchievesData or not GuildAchievesData.BCCLevels then
+		DebugPrint("BCCLevels data not loaded!")
+		return nil
+	end
+	
+	local messages = GuildAchievesData.BCCLevels[level]
+	if not messages or #messages == 0 then
+		-- Fall back to generic BCC milestone messages
+		messages = GuildAchievesData.BCCLevels["Generic"]
+		if not messages or #messages == 0 then
+			DebugPrint("No BCC messages found for level:", level)
+			return nil
+		end
+	end
+	
+	local message = messages[math.random(#messages)]
+	message = message:gsub("{player}", playerName)
+	message = message:gsub("{level}", tostring(level))
+	return message
+end
+
 -- Format a list of names nicely (e.g., "Alice, Bob, and Charlie")
 local function FormatNameList(names)
 	local count = #names
@@ -403,8 +449,8 @@ local function GetGroupAchievementMessage(achievementName, achievementCategory, 
 	message = message:gsub("{category}", achievementCategory or "General")
 	
 	return message
-end
-
+	end
+	
 -- Clear the achievement batch
 local function ClearBatch()
 	achievementBatch.isCollecting = false
@@ -525,9 +571,9 @@ local function ProcessBatch()
 				if #message > 250 then
 					message = message:sub(1, 247) .. "..."
 				end
-				SendChatMessage(message, "GUILD")
-				lastMessageTime = GetTime()
-				DebugPrint("Sent:", message)
+		SendChatMessage(message, "GUILD")
+		lastMessageTime = GetTime()
+		DebugPrint("Sent:", message)
 			end
 		end)
 		delay = delay + 0.3 -- Small gap between multiple messages
@@ -596,6 +642,126 @@ local function StartBatchCollection()
 		
 		DebugPrint("Started batch collection, will process in", BATCH_WINDOW, "seconds")
 	end
+end
+
+-- =============================================================================
+-- BCC Level-Up Polling System
+-- Only active on Burning Crusade Classic where achievements don't exist.
+-- Polls guild roster every 30 seconds to detect milestone level-ups.
+-- Only tracks players while they are online - goes offline = tracking cleared.
+-- Only congratulates on actual dings (must see the previous level first).
+-- Verifies guild membership before congratulating.
+-- =============================================================================
+
+local function BCCPollGuildRoster()
+	if not GuildAchieves.db or not GuildAchieves.db.profile.IsEnabled then return end
+	if not IsInGuild() then return end
+	
+	-- Request fresh roster data from server
+	if GuildRoster then
+		GuildRoster()
+	end
+	
+	local numMembers = GetNumGuildMembers()
+	if numMembers == 0 then return end
+	
+	local currentOnline = {}
+	local myName = UnitName("player")
+	local milestonesDinged = {}
+	
+	for i = 1, numMembers do
+		local fullName, _, _, level, _, _, _, _, isOnline = GetGuildRosterInfo(i)
+		if fullName and isOnline and level and level > 0 then
+			local name = fullName:match("([^%-]+)") or fullName
+			currentOnline[name] = level
+			
+			local previousLevel = bccTracker.onlineLevels[name]
+			if previousLevel and level > previousLevel then
+				-- Level increased since last poll - check ALL milestones between old and new level
+				-- This handles the case where someone levels through a milestone within one poll interval
+				for milestone, _ in pairs(BCC_MILESTONES) do
+					if milestone > previousLevel and milestone <= level then
+						-- Skip self unless CongratsSelf is enabled
+						if name ~= myName or GuildAchieves.db.profile.CongratsSelf then
+							table.insert(milestonesDinged, {name = name, level = milestone})
+							DebugPrint("BCC milestone detected:", name, "reached level", milestone, "(was", previousLevel, ")")
+						end
+					end
+				end
+			elseif not previousLevel then
+				-- First time seeing this player online - just record their level, don't congratulate
+				-- This prevents false congratulations for players who just logged in or joined the guild
+				DebugPrint("BCC: First time seeing", name, "online at level", level, "- recording without congratulation")
+			end
+		end
+	end
+	
+	-- Replace tracking table with ONLY currently online players
+	-- When a player goes offline, their entry is removed
+	-- When they come back online, they're treated as "first seen" (no congratulation for offline progress)
+	bccTracker.onlineLevels = currentOnline
+	
+	-- Send congratulation messages with natural-looking delays
+	if #milestonesDinged > 0 then
+		local delay = 1.0 + math.random() * 2.0  -- 1-3 second initial delay
+		for _, ding in ipairs(milestonesDinged) do
+			C_Timer.After(delay, function()
+				if not GuildAchieves.db or not GuildAchieves.db.profile.IsEnabled then return end
+				
+				-- Verify player is still in guild and online (they appear in current tracking)
+				if not bccTracker.onlineLevels[ding.name] then
+					DebugPrint("BCC: Player", ding.name, "no longer online or in guild, skipping congratulation")
+					return
+				end
+				
+				-- Check if Level category is enabled
+				if GuildAchieves.db.profile.CategoryToggles.Level == false then
+					DebugPrint("BCC: Level category disabled, skipping")
+					return
+				end
+				
+				local message = GetBCCLevelMessage(ding.level, ding.name)
+				if message then
+					if #message > 250 then
+						message = message:sub(1, 247) .. "..."
+					end
+					SendChatMessage(message, "GUILD")
+					lastMessageTime = GetTime()
+					DebugPrint("BCC: Sent level-up message for", ding.name, "reaching level", ding.level)
+				end
+			end)
+			delay = delay + 1.0 + math.random() * 1.0  -- 1-2 second gap between multiple messages
+		end
+	end
+end
+
+local function StartBCCTracking()
+	if bccTracker.ticker then return end  -- Already running
+	
+	DebugPrint("Starting BCC level-up tracking (polling every", bccTracker.POLL_INTERVAL, "seconds)")
+	
+	-- Request initial roster data
+	if GuildRoster then
+		GuildRoster()
+	end
+	
+	-- Initial population scan after a short delay for roster data to arrive
+	C_Timer.After(3, function()
+		BCCPollGuildRoster()
+		DebugPrint("BCC: Initial roster scan complete")
+	end)
+	
+	-- Start the periodic polling ticker
+	bccTracker.ticker = C_Timer.NewTicker(bccTracker.POLL_INTERVAL, BCCPollGuildRoster)
+end
+
+local function StopBCCTracking()
+	if bccTracker.ticker then
+		bccTracker.ticker:Cancel()
+		bccTracker.ticker = nil
+	end
+	bccTracker.onlineLevels = {}
+	DebugPrint("BCC level-up tracking stopped")
 end
 
 -- Handle guild achievement event
@@ -999,8 +1165,11 @@ end
 function GuildAchieves:OnInitialize()
 	DebugPrint("GuildAchieves:OnInitialize called")
 	
-	-- Register events
-	self:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT")
+	-- Register events based on game version
+	if not isBCC then
+		-- Normal mode: Listen for achievement events (achievements exist in this version)
+		self:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT")
+	end
 	
 	-- Register options
 	LibStub("AceConfig-3.0"):RegisterOptionsTable("GuildAchieves", options, {"guildachieves", "ga"})
@@ -1053,14 +1222,29 @@ function GuildAchieves:OnInitialize()
 	CreateMinimapButton()
 	
 	DebugPrint("GuildAchieves initialized successfully")
-	self:Print("Guild Achieves loaded! Type /guildachieves or /ga for options.")
+	if isBCC then
+		self:Print("Guild Achieves loaded (Burning Crusade Classic)! Tracking milestone level-ups. Type /ga for options.")
+	else
+		self:Print("Guild Achieves loaded! Type /guildachieves or /ga for options.")
+	end
 end
 
 function GuildAchieves:OnEnable()
 	DebugPrint("GuildAchieves:OnEnable called")
+	if isBCC and self.db and self.db.profile.IsEnabled then
+		-- Start BCC level tracking with a delay for guild data to load
+		C_Timer.After(5, function()
+			if self.db.profile.IsEnabled then
+				StartBCCTracking()
+			end
+		end)
+	end
 end
 
 function GuildAchieves:OnDisable()
 	DebugPrint("GuildAchieves:OnDisable called")
+	if isBCC then
+		StopBCCTracking()
+	end
 end
 

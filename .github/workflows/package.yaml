@@ -18,7 +18,7 @@ on:
       - '*'
 
 env:
-  GAME_VERSIONS: "5.5.0,11.2.5,1.15.7,3.4.5,4.4.2,2.5.4"  # MOP Classic and Retail
+  GAME_VERSIONS: "5.5.0,11.2.5,1.15.7,3.4.5,4.4.2,2.5.4,2.5.5"  # MOP Classic
 
 jobs:
   package:
@@ -350,36 +350,36 @@ jobs:
           
           # Check if CHANGELOG.txt exists
           if [[ -f "CHANGELOG.txt" ]]; then
-            # Read changelog and extract content for the base version
-            awk -v version="$BASE_VERSION" '
-            BEGIN { 
-              found = 0; 
-              content = ""; 
-              in_version = 0;
+          # Read changelog and extract content for the base version
+          awk -v version="$BASE_VERSION" '
+          BEGIN { 
+            found = 0; 
+            content = ""; 
+            in_version = 0;
+          }
+          /^## Version / { 
+            if (found && in_version) {
+              # We hit the next version, stop processing
+              exit;
             }
-            /^## Version / { 
-              if (found && in_version) {
-                # We hit the next version, stop processing
-                exit;
-              }
-              if ($0 ~ version || gsub(/^## Version /, "") == version) {
-                found = 1; 
-                in_version = 1;
-                next; # Skip the version header itself
-              }
+            if ($0 ~ version || gsub(/^## Version /, "") == version) {
+              found = 1; 
+              in_version = 1;
+              next; # Skip the version header itself
             }
-            found && in_version { 
-              if (content != "") content = content "\n";
-              content = content $0;
+          }
+          found && in_version { 
+            if (content != "") content = content "\n";
+            content = content $0;
+          }
+          END { 
+            if (content != "") {
+              print content;
+            } else {
+              print "No changelog content found for version " version;
             }
-            END { 
-              if (content != "") {
-                print content;
-              } else {
-                print "No changelog content found for version " version;
-              }
-            }
-            ' CHANGELOG.txt > changelog_content.txt
+          }
+          ' CHANGELOG.txt > changelog_content.txt
           else
             echo "Initial release of Guild Achieve Congratulator - Automatically congratulates guildies on achievements with humorous messages!" > changelog_content.txt
           fi

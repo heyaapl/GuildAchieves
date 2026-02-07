@@ -1,3 +1,19 @@
+## Version 1.1.2
+
+### 🔧 The Burning Crusade Classic - Milestone Level-Up Tracking
+- Added full support for Burning Crusade Classic (BCC and BCC Anniversary) where achievements don't exist in the game
+- Polls guild roster every 30 seconds to detect milestone level-ups for online guildies
+- Milestone levels: 10, 20, 30, 40, 50, 58 (Dark Portal!), 60 (Classic cap), 70 (TBC cap!)
+- Special level 58 messages celebrating entry into Outland through the Dark Portal
+- All 195 messages are themed around The Burning Crusade, Outland, Illidan, and the level 70 cap
+- Only congratulates on actual dings - must see level tick from previous to new level
+- Players who join the guild are not congratulated until their level actually increases
+- Only tracks online players - offline progress is never tracked or compared
+- Verifies players are still in the guild before sending congratulations
+- Automatically detects BCC client and switches to polling mode
+
+---
+
 ## Version 1.1.1 - Bug Fix
 
 ### 🐛 Fixed Self-Congratulation Bug
