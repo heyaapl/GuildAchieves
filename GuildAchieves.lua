@@ -677,15 +677,21 @@ local function BCCPollGuildRoster()
 			
 			local previousLevel = bccTracker.onlineLevels[name]
 			if previousLevel and level > previousLevel then
-				-- Level increased since last poll - check ALL milestones between old and new level
-				-- This handles the case where someone levels through a milestone within one poll interval
+				-- Level increased since last poll - find the HIGHEST milestone crossed
+				-- Only congratulate on the highest one to avoid spam from boosts or rapid leveling
+				local highestMilestone = nil
 				for milestone, _ in pairs(BCC_MILESTONES) do
 					if milestone > previousLevel and milestone <= level then
-						-- Skip self unless CongratsSelf is enabled
-						if name ~= myName or GuildAchieves.db.profile.CongratsSelf then
-							table.insert(milestonesDinged, {name = name, level = milestone})
-							DebugPrint("BCC milestone detected:", name, "reached level", milestone, "(was", previousLevel, ")")
+						if not highestMilestone or milestone > highestMilestone then
+							highestMilestone = milestone
 						end
+					end
+				end
+				if highestMilestone then
+					-- Skip self unless CongratsSelf is enabled
+					if name ~= myName or GuildAchieves.db.profile.CongratsSelf then
+						table.insert(milestonesDinged, {name = name, level = highestMilestone})
+						DebugPrint("BCC milestone detected:", name, "reached level", highestMilestone, "(was", previousLevel, ")")
 					end
 				end
 			elseif not previousLevel then

@@ -10,7 +10,7 @@
 ## Interface-Retail: 110205
 ## Notes: Automatically congratulates guildies on achievements with humorous messages!
 ## Title: Guild Achieves
-## Version: 1.1.2
+## Version: 1.1.3
 ## SavedVariables: GuildAchievesDB
 embeds.xml
 Data\achievements.lua
