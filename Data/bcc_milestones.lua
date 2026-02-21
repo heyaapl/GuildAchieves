@@ -208,7 +208,7 @@ GuildAchievesData.BCCLevels = {
 		"Level 60 {player}! You can now run all the classic dungeons. Or, and hear me out, keep pushing to 70.",
 		"Grats {player} on 60! You've outleveled everything in the old world. Outland still has surprises, though.",
 		"{player} reached level 60! The final ten levels are the Burning Crusade experience. Embrace the chaos.",
-		"Level 60 for {player}! Single digits away from max. The Outland endgame is within reach.",
+		"Level 60 for {player}! Only 10 levels away from endless rep grinding. Outland endgame is only a few hundred dungeons away!",
 		"{player} hit 60! You've powered through 60 levels. The remaining 10 are where the story gets good.",
 		"Congrats {player}! Level 60! Your character is officially qualified for all TBC dungeon content. Go wild.",
 		"{player} dinged 60! Azeroth is in your rearview mirror. Outland's endgame dungeons are dead ahead.",
