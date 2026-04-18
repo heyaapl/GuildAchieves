@@ -14,12 +14,19 @@ local defaults
 local lastMessageTime = 0
 local MESSAGE_COOLDOWN = 5 -- seconds between messages
 
--- BCC (Burning Crusade Classic) Detection
--- In BCC, achievements don't exist, so we poll guild roster for milestone level-ups instead
-local isBCC = false
+-- Client Version Detection
+-- Used to pick version-specific messages and behaviors
+local isBCC = false          -- Burning Crusade Classic (no achievements system)
+local isMidnight = false     -- WoW Midnight (12.0.x) - retail
+local isRetail = false       -- Retail (any modern version)
+local tocVersion = 0
 do
-	local _, _, _, tocVersion = GetBuildInfo()
+	local _, _, _, toc = GetBuildInfo()
+	tocVersion = toc or 0
 	isBCC = (tocVersion >= 20000 and tocVersion < 30000)
+	isMidnight = (tocVersion >= 120000 and tocVersion < 130000)
+	-- Retail includes TWW (11.x), Midnight (12.x), and beyond
+	isRetail = (tocVersion >= 100000)
 end
 
 -- BCC Level-Up Tracking System (session-only, no persistence)
@@ -201,6 +208,26 @@ local ACHIEVEMENT_CATEGORIES = {
 	[162] = "WorldEvents",    -- Hallow's End
 	[163] = "WorldEvents",    -- Pilgrim's Bounty
 	[164] = "WorldEvents",    -- Winter Veil
+
+	-- =========================================================================
+	-- MIDNIGHT (12.0.1) Categories - retail WoW
+	-- Category IDs sourced from Wowhead PTR data and may shift slightly on launch;
+	-- the GetAchievementCategory API returns these dynamically so our fallback
+	-- keyword detection (in GetAchievementCategoryInfo) also catches them.
+	-- =========================================================================
+	-- Midnight expansion top-level
+	[15552] = "MidnightRaids",       -- Midnight Raids (placeholder, actual ID varies)
+	[15553] = "MidnightKeystones",   -- Midnight Mythic+ / Keystones
+	[15554] = "MidnightDelves",      -- Midnight Delves
+	[15555] = "MidnightExploration", -- Midnight Exploration
+	[15556] = "MidnightPrey",        -- Prey system
+	[15557] = "MidnightHousing",     -- Housing (new system in Midnight)
+	[15558] = "MidnightClass",       -- Class achievements
+	[15559] = "MidnightHaranir",     -- Haranir allied race
+	-- Categories that also appear in retail generally; we map them for coverage
+	[15303] = "Dungeons",            -- Retail Dungeons & Raids container (TWW-era)
+	[15522] = "Dungeons",            -- Retail Dungeons (may update in 12.x)
+	[15301] = "Raids",               -- Retail Raids container
 }
 
 -- Level achievement IDs mapping
@@ -217,34 +244,62 @@ local LEVEL_ACHIEVEMENT_IDS = {
 	[6193] = 90,   -- Level 90
 }
 
+-- Safe wrapper around GetAchievementInfo - API signature has varied over expansions
+-- Returns just the achievement name (or nil) without risking a runtime error
+local function SafeGetAchievementName(achievementID)
+	if not GetAchievementInfo then return nil end
+	local ok, _, name = pcall(GetAchievementInfo, achievementID)
+	if ok and name then return name end
+	return nil
+end
+
+-- Safe wrapper around GetAchievementCategory - returns categoryID or nil
+local function SafeGetAchievementCategory(achievementID)
+	if not GetAchievementCategory then return nil end
+	local ok, categoryID = pcall(GetAchievementCategory, achievementID)
+	if ok then return categoryID end
+	return nil
+end
+
+-- Safe wrapper around GetCategoryInfo - returns (name, parentID) or (nil, nil)
+-- In Midnight/retail this may be relocated to C_AchievementInfo; handle both
+local function SafeGetCategoryInfo(categoryID)
+	local fn = GetCategoryInfo
+	if C_AchievementInfo and C_AchievementInfo.GetCategoryInfo then
+		fn = C_AchievementInfo.GetCategoryInfo
+	end
+	if not fn then return nil, nil end
+	local ok, name, parentID = pcall(fn, categoryID)
+	if ok then return name, parentID end
+	return nil, nil
+end
+
 -- Get category from achievement ID
 local function GetAchievementCategoryInfo(achievementID)
 	-- Check if it's a level achievement first
 	if LEVEL_ACHIEVEMENT_IDS[achievementID] then
 		return "Level", LEVEL_ACHIEVEMENT_IDS[achievementID]
 	end
-	
-	-- Get achievement info using WoW API
-	local _, name = GetAchievementInfo(achievementID)
-	
-	-- Get the category using WoW API (not our function!)
-	local categoryID = select(1, GetAchievementCategory(achievementID))
+
+	local name = SafeGetAchievementName(achievementID)
+
+	local categoryID = SafeGetAchievementCategory(achievementID)
 	if categoryID and ACHIEVEMENT_CATEGORIES[categoryID] then
 		return ACHIEVEMENT_CATEGORIES[categoryID], nil
 	end
-	
+
 	-- Try parent category
 	if categoryID then
-		local _, parentID = GetCategoryInfo(categoryID)
+		local _, parentID = SafeGetCategoryInfo(categoryID)
 		if parentID and ACHIEVEMENT_CATEGORIES[parentID] then
 			return ACHIEVEMENT_CATEGORIES[parentID], nil
 		end
 	end
-	
+
 	-- Check achievement name for keywords
 	if name then
 		local lowerName = name:lower()
-		
+
 		-- Level detection by name
 		if lowerName:match("level %d+") then
 			local level = tonumber(lowerName:match("level (%d+)"))
@@ -252,20 +307,42 @@ local function GetAchievementCategoryInfo(achievementID)
 				return "Level", level
 			end
 		end
-		
-		-- Category detection by keywords
+
+		-- Midnight-specific keyword detection (check BEFORE generic categories)
+		-- Uses zone, system, and lore names from Midnight 12.0.1
+		if lowerName:match("midnight") or lowerName:match("voidstorm") or
+		   lowerName:match("quel'danas") or lowerName:match("quel'thalas") or
+		   lowerName:match("voidspire") or lowerName:match("dreamrift") or
+		   lowerName:match("belo'ren") or lowerName:match("l'ura") then
+			if lowerName:match("keystone") or lowerName:match("mythic") then
+				return "MidnightKeystones", nil
+			end
+			if lowerName:match("raid") or lowerName:match("boss") or lowerName:match("voidspire") or lowerName:match("dreamrift") then
+				return "MidnightRaids", nil
+			end
+			if lowerName:match("explor") or lowerName:match("harandar") or lowerName:match("zul'aman") or lowerName:match("eversong") then
+				return "MidnightExploration", nil
+			end
+		end
+		if lowerName:match("delve") then return "MidnightDelves", nil end
+		if lowerName:match("prey") or lowerName:match("preyseeker") then return "MidnightPrey", nil end
+		if lowerName:match("housing") or lowerName:match("decorator") or lowerName:match("decoration") or lowerName:match("home") then return "MidnightHousing", nil end
+		if lowerName:match("haranir") or lowerName:match("hara'ti") then return "MidnightHaranir", nil end
+		if lowerName:match("devourer") then return "MidnightClass", nil end
+
+		-- Generic category detection by keywords
 		if lowerName:match("explor") then return "Exploration", nil end
 		if lowerName:match("dungeon") or lowerName:match("heroic") then return "Dungeons", nil end
 		if lowerName:match("raid") or lowerName:match("boss") then return "Raids", nil end
 		if lowerName:match("arena") or lowerName:match("battleground") or lowerName:match("honorable") then return "PvP", nil end
 		if lowerName:match("craft") or lowerName:match("skill") or lowerName:match("profession") then return "Professions", nil end
-		if lowerName:match("reputation") or lowerName:match("exalted") then return "Reputation", nil end
+		if lowerName:match("reputation") or lowerName:match("exalted") or lowerName:match("renown") then return "Reputation", nil end
 		if lowerName:match("pet") or lowerName:match("battle pet") then return "PetBattles", nil end
 		if lowerName:match("scenario") then return "Scenarios", nil end
 		if lowerName:match("quest") or lowerName:match("loremaster") then return "Quests", nil end
 		if lowerName:match("festival") or lowerName:match("holiday") or lowerName:match("brewfest") or lowerName:match("noblegarden") then return "WorldEvents", nil end
 	end
-	
+
 	-- Default fallback
 	return "General", nil
 end
@@ -276,20 +353,42 @@ local function GetRandomMessage(category, level, playerName, achievementName)
 		DebugPrint("GuildAchievesData not loaded!")
 		return nil
 	end
-	
+
 	local messages
-	
-	-- For level achievements, get level-specific messages
+
+	-- For level achievements, prefer Midnight-specific messages when on Midnight client + level 90
 	if category == "Level" and level then
-		if GuildAchievesData.Levels and GuildAchievesData.Levels[level] then
+		if isMidnight and level == 90 and GuildAchievesData.MidnightLevel90Messages then
+			messages = GuildAchievesData.MidnightLevel90Messages
+		elseif GuildAchievesData.Levels and GuildAchievesData.Levels[level] then
 			messages = GuildAchievesData.Levels[level]
 		end
 	end
-	
+
+	-- Midnight-specific categories have their own message pool
+	if (not messages or #messages == 0) and category and category:match("^Midnight") then
+		if GuildAchievesData.MidnightCategories and GuildAchievesData.MidnightCategories[category] then
+			messages = GuildAchievesData.MidnightCategories[category]
+		end
+	end
+
 	-- Fall back to category messages
 	if not messages or #messages == 0 then
 		if GuildAchievesData.Categories and GuildAchievesData.Categories[category] then
 			messages = GuildAchievesData.Categories[category]
+		end
+	end
+
+	-- If still nothing and it's a Midnight raid/dungeon/etc., fall back to the generic equivalent
+	if not messages or #messages == 0 then
+		local fallback = nil
+		if category == "MidnightRaids" then fallback = "Raids"
+		elseif category == "MidnightKeystones" or category == "MidnightDelves" then fallback = "Dungeons"
+		elseif category == "MidnightExploration" then fallback = "Exploration"
+		elseif category == "MidnightClass" or category == "MidnightPrey" or category == "MidnightHousing" or category == "MidnightHaranir" then fallback = "General"
+		end
+		if fallback and GuildAchievesData.Categories and GuildAchievesData.Categories[fallback] then
+			messages = GuildAchievesData.Categories[fallback]
 		end
 	end
 	
@@ -1072,6 +1171,84 @@ local options = {
 					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.General = value end,
 					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
 				},
+				-- Midnight (12.0.1) category header
+				midnightHeader = {
+					order = 13,
+					type = 'header',
+					name = 'Midnight (12.0.1) Categories',
+				},
+				midnightRaidsToggle = {
+					order = 14,
+					type = 'toggle',
+					name = 'Midnight Raids',
+					desc = 'Voidspire, Dreamrift, March on Quel\'Danas',
+					get = function() return GuildAchieves.db.profile.CategoryToggles.MidnightRaids ~= false end,
+					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.MidnightRaids = value end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				midnightKeystonesToggle = {
+					order = 15,
+					type = 'toggle',
+					name = 'Midnight Keystones',
+					desc = 'Midnight Mythic+ and keystone achievements',
+					get = function() return GuildAchieves.db.profile.CategoryToggles.MidnightKeystones ~= false end,
+					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.MidnightKeystones = value end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				midnightDelvesToggle = {
+					order = 16,
+					type = 'toggle',
+					name = 'Midnight Delves',
+					desc = 'Delve achievements from the Midnight expansion',
+					get = function() return GuildAchieves.db.profile.CategoryToggles.MidnightDelves ~= false end,
+					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.MidnightDelves = value end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				midnightExplorationToggle = {
+					order = 17,
+					type = 'toggle',
+					name = 'Midnight Exploration',
+					desc = 'Quel\'Thalas, Zul\'Aman, Harandar, Voidstorm exploration',
+					get = function() return GuildAchieves.db.profile.CategoryToggles.MidnightExploration ~= false end,
+					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.MidnightExploration = value end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				midnightPreyToggle = {
+					order = 18,
+					type = 'toggle',
+					name = 'Prey System',
+					desc = 'Preyseeker\'s Journey and hunt achievements',
+					get = function() return GuildAchieves.db.profile.CategoryToggles.MidnightPrey ~= false end,
+					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.MidnightPrey = value end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				midnightHousingToggle = {
+					order = 19,
+					type = 'toggle',
+					name = 'Housing',
+					desc = 'New Midnight housing achievements',
+					get = function() return GuildAchieves.db.profile.CategoryToggles.MidnightHousing ~= false end,
+					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.MidnightHousing = value end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				midnightClassToggle = {
+					order = 20,
+					type = 'toggle',
+					name = 'Midnight Class',
+					desc = 'Class-specific Midnight achievements (Devourer DH, etc.)',
+					get = function() return GuildAchieves.db.profile.CategoryToggles.MidnightClass ~= false end,
+					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.MidnightClass = value end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				midnightHaranirToggle = {
+					order = 21,
+					type = 'toggle',
+					name = 'Haranir',
+					desc = 'Haranir allied race achievements',
+					get = function() return GuildAchieves.db.profile.CategoryToggles.MidnightHaranir ~= false end,
+					set = function(info, value) GuildAchieves.db.profile.CategoryToggles.MidnightHaranir = value end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
 			},
 		},
 		
@@ -1146,8 +1323,16 @@ local function CreateMinimapButton()
 					GuildAchieves:Print("Guild Achieves disabled.")
 				end
 			elseif button == "RightButton" then
-				-- Open settings
-				Settings.OpenToCategory("GuildAchieves")
+				-- Open settings - try modern Settings API first (Dragonflight+, Midnight),
+				-- then fall back to older InterfaceOptionsFrame_OpenToCategory for Classic/BCC/Wrath
+				if Settings and Settings.OpenToCategory then
+					Settings.OpenToCategory("GuildAchieves")
+				elseif InterfaceOptionsFrame_OpenToCategory then
+					InterfaceOptionsFrame_OpenToCategory("Guild Achieves")
+					InterfaceOptionsFrame_OpenToCategory("Guild Achieves") -- called twice (Blizzard bug workaround)
+				else
+					GuildAchieves:Print("Type /ga or /guildachieves to open settings.")
+				end
 			end
 		end,
 		OnTooltipShow = function(tooltip)
@@ -1206,6 +1391,15 @@ function GuildAchieves:OnInitialize()
 				Scenarios = true,
 				WorldEvents = true,
 				General = true,
+				-- Midnight (12.0.1) categories
+				MidnightRaids = true,
+				MidnightKeystones = true,
+				MidnightDelves = true,
+				MidnightExploration = true,
+				MidnightPrey = true,
+				MidnightHousing = true,
+				MidnightClass = true,
+				MidnightHaranir = true,
 			},
 			minimapIcon = {
 				hide = false,
@@ -1230,6 +1424,8 @@ function GuildAchieves:OnInitialize()
 	DebugPrint("GuildAchieves initialized successfully")
 	if isBCC then
 		self:Print("Guild Achieves loaded (Burning Crusade Classic)! Tracking milestone level-ups. Type /ga for options.")
+	elseif isMidnight then
+		self:Print("Guild Achieves loaded (Midnight 12.0.1)! Type /guildachieves or /ga for options.")
 	else
 		self:Print("Guild Achieves loaded! Type /guildachieves or /ga for options.")
 	end

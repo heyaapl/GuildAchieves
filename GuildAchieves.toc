@@ -1,5 +1,5 @@
 ## Author: heyaapl
-## Interface: 55000
+## Interface: 120001
 ## Interface-Classic: 11503
 ## Interface-BCC: 20504
 ## Interface-BCC-Anniversary: 20505
@@ -7,13 +7,14 @@
 ## Interface-Cata: 40400
 ## Interface-MoP: 55000
 ## Interface-SoD: 55000
-## Interface-Retail: 110205
+## Interface-Retail: 120001
+## IconTexture: Interface\AddOns\GuildAchieves\icon
 ## Notes: Automatically congratulates guildies on achievements with humorous messages!
 ## Title: Guild Achieves
-## Version: 1.1.3
+## Version: 1.2.0
 ## SavedVariables: GuildAchievesDB
 embeds.xml
 Data\achievements.lua
 Data\bcc_milestones.lua
+Data\midnight_messages.lua
 GuildAchieves.lua
-

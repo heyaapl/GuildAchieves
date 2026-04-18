@@ -1,3 +1,35 @@
+## Version 1.2.0 - Midnight Release
+
+### 🌙 World of Warcraft: Midnight (12.0.1) Support
+Full compatibility with the Midnight expansion! The addon now recognizes and celebrates all the new Midnight achievement categories with custom TBC-style humorous messages themed around Quel'Thalas, the Voidstorm, and Xal'atath's machinations.
+
+### 🏆 New Midnight Achievement Categories
+- **Midnight Raids** (30+ messages) - Voidspire, Dreamrift, March on Quel'Danas (Belo'ren & Midnight Falls/L'ura)
+- **Midnight Keystones** (20+ messages) - Season One Mythic+ with Calamitous Carrion references
+- **Midnight Delves** (10+ messages) - Brann Bronzebeard approves
+- **Midnight Exploration** (10+ messages) - Eversong Woods, Zul'Aman zone, Harandar, Voidstorm
+- **Prey System** (10+ messages) - Preyseeker's Journey and Murder Row hunts
+- **Housing** (12+ messages) - The new Azeroth housing system
+- **Midnight Class** (10+ messages) - Devourer DH spec and class tuning jabs
+- **Haranir** (8+ messages) - The new bioluminescent allied race
+
+### 🎉 Midnight-Specific Level 90 Messages
+30 new messages for hitting level 90 in Midnight, replacing the old MoP-themed level 90 messages when playing on retail. References Xal'atath, Silvermoon, the Sunwell, Prey, Delves, Housing, and more.
+
+### 🔧 Technical Improvements
+- Added `## IconTexture` to the TOC so Blizzard's AddOn menu shows the addon icon
+- Bumped Interface-Retail to 120001 (Midnight 12.0.1)
+- Added `C_AchievementInfo.GetCategoryInfo` detection for modern category API
+- Wrapped achievement API calls in safe pcalls to prevent errors on client updates
+- Added Midnight-specific keyword detection for achievements with unknown category IDs
+- Smart category fallback: if a Midnight category has no messages, uses the closest generic equivalent (Raids, Dungeons, Exploration, etc.)
+- Minimap button settings shortcut now works on Classic/BCC/Wrath (uses `InterfaceOptionsFrame_OpenToCategory` fallback)
+
+### 📦 Build System
+- GAME_VERSIONS bumped to include 12.0.1 (replacing 11.2.5)
+
+---
+
 ## Version 1.1.3
 
 ### 🐛 Bug Fixes
