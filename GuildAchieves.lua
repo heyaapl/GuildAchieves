@@ -885,6 +885,12 @@ end
 
 -- Handle guild achievement event
 local function OnGuildAchievement(playerName, achievementID)
+	-- Guard against the event firing before OnInitialize has finished setting up self.db
+	-- (can happen at login if the server queues up guild achievement messages before our init completes)
+	if not GuildAchieves.db or not GuildAchieves.db.profile then
+		DebugPrint("DB not ready yet, ignoring achievement (will catch future ones)")
+		return
+	end
 	if not GuildAchieves.db.profile.IsEnabled then
 		DebugPrint("Addon disabled, ignoring achievement")
 		return
@@ -1369,14 +1375,7 @@ end
 -- Addon initialization
 function GuildAchieves:OnInitialize()
 	DebugPrint("GuildAchieves:OnInitialize called")
-	
-	-- Register events based on game version
-	if not isBCC then
-		-- Normal mode: Listen for achievement events (achievements exist in this version)
-		-- Use our private eventFrame instead of AceEvent to avoid the Midnight 12.0 shared-frame taint bug
-		eventFrame:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT")
-	end
-	
+
 	-- Register options
 	LibStub("AceConfig-3.0"):RegisterOptionsTable("GuildAchieves", options, {"guildachieves", "ga"})
 	
@@ -1435,7 +1434,14 @@ function GuildAchieves:OnInitialize()
 	
 	-- Create minimap button
 	CreateMinimapButton()
-	
+
+	-- Register events AFTER db is initialized so the handler can safely read profile settings
+	-- Uses our private unnamed eventFrame (see top of file) to avoid the Midnight 12.0
+	-- AceEvent30Frame shared-frame taint bug.
+	if not isBCC then
+		eventFrame:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT")
+	end
+
 	DebugPrint("GuildAchieves initialized successfully")
 	if isBCC then
 		self:Print("Guild Achieves loaded (Burning Crusade Classic)! Tracking milestone level-ups. Type /ga for options.")
