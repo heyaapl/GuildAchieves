@@ -2,9 +2,23 @@
 -- Create Date : 12/28/2024
 -- Guild Achieves - Automatically congratulates guildies on achievements with humorous messages!
 
-GuildAchieves = LibStub("AceAddon-3.0"):NewAddon("GuildAchieves", "AceConsole-3.0", "AceEvent-3.0")
+GuildAchieves = LibStub("AceAddon-3.0"):NewAddon("GuildAchieves", "AceConsole-3.0")
 
 -- GLOBALS: GuildAchieves, GuildAchievesData
+
+-- Private event frame - intentionally UNNAMED to avoid global frame taint on Midnight 12.0+
+-- Previously we used AceEvent-3.0's shared "AceEvent30Frame" which other addons also use; when
+-- any addon tainted that shared frame, Midnight's stricter taint rules threw:
+--   ADDON FORBIDDEN: AceEvent30Frame:RegisterEvent()
+-- An unnamed private frame is NOT shared across addons and cannot be tainted externally.
+local eventFrame = CreateFrame("Frame")
+eventFrame:SetScript("OnEvent", function(self, event, ...)
+	local handler = GuildAchieves and GuildAchieves[event]
+	if handler then
+		-- Call the method on the addon object, matching AceEvent's dispatch signature
+		handler(GuildAchieves, event, ...)
+	end
+end)
 
 -- Local references
 local db
@@ -1359,7 +1373,8 @@ function GuildAchieves:OnInitialize()
 	-- Register events based on game version
 	if not isBCC then
 		-- Normal mode: Listen for achievement events (achievements exist in this version)
-		self:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT")
+		-- Use our private eventFrame instead of AceEvent to avoid the Midnight 12.0 shared-frame taint bug
+		eventFrame:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT")
 	end
 	
 	-- Register options

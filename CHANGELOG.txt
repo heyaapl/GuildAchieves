@@ -1,3 +1,22 @@
+## Version 1.2.1 - Midnight Taint Fix
+
+### 🐛 Critical Fix: AceEvent30Frame Forbidden Error on Midnight
+Fixed a Midnight 12.0 error: `ADDON FORBIDDEN: AceEvent30Frame:RegisterEvent()`
+
+**Root cause:** AceEvent-3.0 creates a globally-named shared frame (`AceEvent30Frame`) that every addon using the library reuses via LibStub's singleton pattern. Midnight's stricter taint tracking means if *any* other addon taints that shared frame, every subsequent `RegisterEvent` call on it is blocked as a protected function call.
+
+**Fix:** Replaced the AceEvent-3.0 embed with a private, unnamed event frame. Our frame is not shared with other addons and cannot be externally tainted. The single `CHAT_MSG_GUILD_ACHIEVEMENT` event now registers on our private frame with zero cross-addon exposure.
+
+### 🧹 Library Cleanup
+Removed three unused libraries that were bloating the addon:
+- **AceComm-3.0** and its bundled **ChatThrottleLib** - no AceComm usage anywhere in the code
+- **AceDBOptions-3.0** - we don't use AceDB's profile UI
+- **AceEvent-3.0** - replaced with a 10-line private frame (see above)
+
+Reduces addon zip size and eliminates three potential sources of lib conflicts.
+
+---
+
 ## Version 1.2.0 - Midnight Release
 
 ### 🌙 World of Warcraft: Midnight (12.0.1) Support
