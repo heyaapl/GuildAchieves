@@ -1,0 +1,5 @@
+*.bak
+*.orig
+.vscode/
+.DS_Store
+Thumbs.db

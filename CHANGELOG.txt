@@ -1,3 +1,8 @@
+## Version 1.2.2 - Midnight Rescue
+
+### 🔧 Midnight 12.0 Fixed
+The addon was loading but silently doing nothing on Midnight. Two root causes found and fixed:
+
 ## Version 1.2.1 - Midnight Taint Fix
 
 ### 🐛 Critical Fix: AceEvent30Frame Forbidden Error on Midnight

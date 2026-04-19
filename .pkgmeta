@@ -1,0 +1,32 @@
+package-as: GuildAchieves
+
+# Auto-fetch the latest Ace3 + support libraries from wowace SVN during packaging.
+# This ensures we always ship versions compatible with the current retail client
+# (e.g. Midnight 12.0 taint fixes) without having to manually update bundled libs.
+externals:
+  Libs/LibStub:
+    url: https://repos.wowace.com/wow/libstub/trunk
+  Libs/CallbackHandler-1.0:
+    url: https://repos.wowace.com/wow/callbackhandler/trunk/CallbackHandler-1.0
+  Libs/AceAddon-3.0:
+    url: https://repos.wowace.com/wow/ace3/trunk/AceAddon-3.0
+  Libs/AceConsole-3.0:
+    url: https://repos.wowace.com/wow/ace3/trunk/AceConsole-3.0
+  Libs/AceDB-3.0:
+    url: https://repos.wowace.com/wow/ace3/trunk/AceDB-3.0
+  Libs/AceConfig-3.0:
+    url: https://repos.wowace.com/wow/ace3/trunk/AceConfig-3.0
+  Libs/AceGUI-3.0:
+    url: https://repos.wowace.com/wow/ace3/trunk/AceGUI-3.0
+  Libs/LibDataBroker-1.1:
+    url: https://repos.wowace.com/wow/libdatabroker-1-1/trunk
+  Libs/LibDBIcon-1.0:
+    url: https://repos.wowace.com/wow/libdbicon-1-0/trunk/LibDBIcon-1.0
+
+# Don't ship the raw backup or dev files in the release zip
+ignore:
+  - "*.bak"
+  - "*.orig"
+  - .vscode
+  - .github
+  - icon.tga.bak
