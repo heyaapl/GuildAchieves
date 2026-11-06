@@ -1,5 +1,5 @@
 ## Author: heyaapl
-## Interface: 120107, 16001
+## Interface: 120105, 16001
 ## Interface-Classic: 11503
 ## Interface-BCC: 20504
 ## Interface-BCC-Anniversary: 20505
@@ -8,7 +8,7 @@
 ## Interface-MoP: 55000
 ## Interface-SoD: 55000
 ## Interface-Camelot: 16001
-## Interface-Retail: 120107
+## Interface-Retail: 120105
 ## IconTexture: Interface\AddOns\GuildAchieves\icon
 ## Notes: Automatically congratulates guildies on achievements with humorous messages!
 ## Title: Guild Achieves
