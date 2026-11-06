@@ -97,7 +97,7 @@ Every achievement category has **40 unique sarcastic/funny responses**:
 ## Supported Versions
 
 - ✅ **Mists of Pandaria Classic** (5.5.0)
-- ✅ **World of Warcraft Retail** (11.2.5+)
+- ✅ **World of Warcraft Retail** (12.1.5)
 - ✅ **Classic Era** (1.15.x)
 - ✅ **Burning Crusade Classic** (2.5.x)
 - ✅ **Wrath of the Lich King Classic** (3.4.x)
