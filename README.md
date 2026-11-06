@@ -88,7 +88,7 @@ Every achievement category has **40 unique sarcastic/funny responses**:
 ## Installation
 
 1. Download from CurseForge
-2. Extract to `World of Warcraft/_classic_/Interface/AddOns/` (for MoP Classic)
+2. Extract to `World of Warcraft/_classic_/Interface/AddOns/` (for MoP Classic; use `_retail_` for Retail or `_forever_` for WoW Forever)
 3. Restart WoW or `/reload`
 4. Check that "Guild Achieves" appears in your AddOns list
 
@@ -102,6 +102,9 @@ Every achievement category has **40 unique sarcastic/funny responses**:
 - ✅ **Burning Crusade Classic** (2.5.x)
 - ✅ **Wrath of the Lich King Classic** (3.4.x)
 - ✅ **Cataclysm Classic** (4.4.x)
+- ✅ **WoW Forever** (1.60.x) - no achievements, so level-ups are congratulated instead (see below)
+
+> **Burning Crusade Classic and WoW Forever** have no achievement system. On those clients the addon polls the guild roster every 30 seconds and congratulates level-ups instead. BCC congratulates milestone levels only (10/20/30/40/50/58/60/70). WoW Forever congratulates every level by default, with 600+ Vanilla-themed messages drawn from milestone, class-specific, level-range, and generic pools; a "Congratulate Every Level" toggle in General settings switches it to milestones only (10/20/30/40/50/60).
 
 ---
 

@@ -23,6 +23,7 @@ end)
 -- Local references
 local db
 local defaults
+local optionsCategoryID  -- Settings category ID returned by AddToBlizOptions (numeric on 12.0+ clients)
 
 -- Cooldown tracking to prevent spam
 local lastMessageTime = 0
@@ -31,19 +32,27 @@ local MESSAGE_COOLDOWN = 5 -- seconds between messages
 -- Client Version Detection
 -- Used to pick version-specific messages and behaviors
 local isBCC = false          -- Burning Crusade Classic (no achievements system)
+local isForever = false      -- WoW: Forever (WOW_PROJECT_CAMELOT) - Vanilla content on the modern client, no achievements
 local isMidnight = false     -- WoW Midnight (12.0.x) - retail
 local isRetail = false       -- Retail (any modern version)
 local tocVersion = 0
 do
 	local _, _, _, toc = GetBuildInfo()
 	tocVersion = toc or 0
+	-- WoW: Forever identifies itself via WOW_PROJECT_CAMELOT (TOC 16001). Check the project ID
+	-- rather than the TOC range so a future TOC bump on Forever doesn't break detection.
+	isForever = (WOW_PROJECT_CAMELOT ~= nil and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT)
 	isBCC = (tocVersion >= 20000 and tocVersion < 30000)
 	isMidnight = (tocVersion >= 120000 and tocVersion < 130000)
 	-- Retail includes TWW (11.x), Midnight (12.x), and beyond
-	isRetail = (tocVersion >= 100000)
+	isRetail = (tocVersion >= 100000) and not isForever
 end
 
--- BCC Level-Up Tracking System (session-only, no persistence)
+-- Flavors without an achievement system fall back to congratulating milestone level-ups
+-- detected by polling the guild roster (see the Level-Up Polling System below).
+local useLevelTracking = isBCC or isForever
+
+-- Level-Up Tracking System (session-only, no persistence)
 -- Only tracks online guild members while the addon player is online
 -- Clears tracked levels when players go offline to avoid tracking offline progress
 local bccTracker = {
@@ -52,11 +61,17 @@ local bccTracker = {
 	POLL_INTERVAL = 30,    -- seconds between roster polls
 }
 
--- BCC milestone levels that trigger congratulations
+-- Milestone levels that trigger congratulations, per flavor
 local BCC_MILESTONES = {
 	[10] = true, [20] = true, [30] = true, [40] = true,
 	[50] = true, [58] = true, [60] = true, [70] = true,
 }
+-- WoW: Forever is Vanilla content with a level 60 cap (mount at 40, epic mount at 60)
+local FOREVER_MILESTONES = {
+	[10] = true, [20] = true, [30] = true, [40] = true,
+	[50] = true, [60] = true,
+}
+local LEVEL_MILESTONES = isForever and FOREVER_MILESTONES or BCC_MILESTONES
 
 -- Achievement batching system
 -- Collects achievements over a window to handle multiple achievements at once
@@ -77,6 +92,154 @@ local function DebugPrint(...)
 	if GuildAchieves and GuildAchieves.db and GuildAchieves.db.profile and GuildAchieves.db.profile.DebugMode then
 		GuildAchieves:Print("[DEBUG]", ...)
 	end
+end
+
+-- =============================================================================
+-- Guild chat sending
+--
+-- The global SendChatMessage was deprecated in 11.2 in favor of C_ChatInfo.SendChatMessage, so
+-- we prefer that and fall back to the global on older clients.
+--
+-- WoW: Forever (and possibly later retail builds) only lets addons post to guild chat from a
+-- hardware event: a send from a C_Timer callback returns normally but the client drops it with
+-- "Interface action failed because of an AddOn" (ADDON_ACTION_BLOCKED). Since every message we
+-- send comes out of a timer or a roster poll, on those clients we queue messages and flush the
+-- queue from the next thing the player does: a key press, a click in the game world, a jump, or
+-- sending a chat line. Keyboard capture propagates the key, and we never swallow mouse clicks.
+-- =============================================================================
+
+local lastDirectSend = nil      -- { message = ..., time = ... } for the most recent direct send
+local function SendGuildChatNow(message)
+	if not message or message == "" then return false end
+
+	local inLockdown = false
+	if C_ChatInfo and C_ChatInfo.InChatMessagingLockdown then
+		local ok, result = pcall(C_ChatInfo.InChatMessagingLockdown)
+		inLockdown = ok and result == true
+	end
+
+	local api, fn
+	if C_ChatInfo and C_ChatInfo.SendChatMessage then
+		api, fn = "C_ChatInfo.SendChatMessage", C_ChatInfo.SendChatMessage
+	elseif SendChatMessage then
+		api, fn = "SendChatMessage", SendChatMessage
+	else
+		DebugPrint("No chat send API available on this client!")
+		return false
+	end
+
+	lastDirectSend = { message = message, time = GetTime() }
+	local ok, err = pcall(fn, message, "GUILD")
+	if ok then
+		DebugPrint("Sent via", api, (inLockdown and "(client reports chat lockdown!)" or ""), "->", message)
+	else
+		DebugPrint("Error from", api, ":", tostring(err), (inLockdown and "(client reports chat lockdown)" or ""))
+	end
+	return ok
+end
+
+-- Hardware-event queue
+local chatQueue = {}                        -- { { message = ..., queuedAt = ... }, ... }
+local CHAT_QUEUE_MAX_AGE = 180              -- seconds; a congrats older than this is dropped, not posted late
+local requiresHardwareEvent = isForever     -- known for Forever; learned at runtime elsewhere (see ADDON_ACTION_BLOCKED)
+local hardwareWatcher                       -- keyboard-capturing frame, only shown while something is queued
+
+local function UpdateHardwareWatcher()
+	if not hardwareWatcher then return end
+	if #chatQueue > 0 and not InCombatLockdown() then
+		hardwareWatcher:Show()
+	else
+		hardwareWatcher:Hide()
+	end
+end
+
+-- Called from hardware-event handlers only. Sends everything queued, in order.
+local function FlushChatQueue()
+	if #chatQueue == 0 then return end
+	local pending = chatQueue
+	chatQueue = {}
+	local now = GetTime()
+	for _, entry in ipairs(pending) do
+		if now - entry.queuedAt <= CHAT_QUEUE_MAX_AGE then
+			SendGuildChatNow(entry.message)
+		else
+			DebugPrint("Dropped a queued message that waited too long for a hardware event:", entry.message)
+		end
+	end
+	UpdateHardwareWatcher()
+end
+
+local function QueueGuildChat(message)
+	table.insert(chatQueue, { message = message, queuedAt = GetTime() })
+	DebugPrint("Queued for the next key press / click (", #chatQueue, "waiting ):", message)
+	UpdateHardwareWatcher()
+end
+
+-- Public entry point used by every message path in the addon
+local function SendGuildChat(message)
+	if not message or message == "" then return false end
+	if requiresHardwareEvent then
+		QueueGuildChat(message)
+		return true
+	end
+	return SendGuildChatNow(message)
+end
+
+-- If a direct send gets blocked, remember that this client needs a hardware event and re-queue
+-- the message so it still goes out on the player's next input. Wired to ADDON_ACTION_BLOCKED.
+local function OnAddonActionBlocked(addonName, functionName)
+	if addonName ~= "GuildAchieves" then return end
+	if not functionName or not tostring(functionName):find("SendChatMessage") then return end
+	if not lastDirectSend or GetTime() - lastDirectSend.time > 2 then return end
+	if not requiresHardwareEvent then
+		requiresHardwareEvent = true
+		DebugPrint("Client blocked a timer-driven guild message; switching to hardware-event queue for this session")
+	end
+	QueueGuildChat(lastDirectSend.message)
+	lastDirectSend = nil
+end
+
+do
+	-- Keyboard: a tiny frame with keyboard enabled and propagation on sees every key press while
+	-- shown and passes it along untouched. SetPropagateKeyboardInput is protected in combat, so
+	-- it is set exactly once here at load; afterwards we only Show/Hide (and never in combat).
+	hardwareWatcher = CreateFrame("Frame", nil, UIParent)
+	hardwareWatcher:SetFrameStrata("TOOLTIP")
+	hardwareWatcher:SetFrameLevel(10000)
+	hardwareWatcher:SetSize(1, 1)
+	hardwareWatcher:SetPoint("TOPLEFT")
+	hardwareWatcher:EnableMouse(false)
+	hardwareWatcher:EnableKeyboard(true)
+	if hardwareWatcher.SetPropagateKeyboardInput then
+		hardwareWatcher:SetPropagateKeyboardInput(true)
+	end
+	hardwareWatcher:SetScript("OnKeyDown", function() FlushChatQueue() end)
+	hardwareWatcher:Hide()
+
+	-- Mouse: clicks on the game world (camera turns, movement, targeting) are hardware events.
+	-- HookScript leaves the original handler untouched, so nothing is swallowed.
+	if WorldFrame and WorldFrame.HookScript then
+		WorldFrame:HookScript("OnMouseDown", function() FlushChatQueue() end)
+	end
+	-- Jumping and sending a chat line are hardware events too (the chat edit box has keyboard
+	-- focus while typing, so the watcher frame doesn't see that Enter key).
+	if hooksecurefunc then
+		if JumpOrAscendStart then hooksecurefunc("JumpOrAscendStart", function() FlushChatQueue() end) end
+		if ChatEdit_SendText then hooksecurefunc("ChatEdit_SendText", function() FlushChatQueue() end) end
+	end
+end
+
+-- Event handlers (dispatched by the private eventFrame at the top of the file)
+function GuildAchieves:ADDON_ACTION_BLOCKED(event, addonName, functionName)
+	OnAddonActionBlocked(addonName, functionName)
+end
+function GuildAchieves:PLAYER_REGEN_DISABLED()
+	-- Entering combat: hide the keyboard watcher (nothing protected is touched by Hide)
+	UpdateHardwareWatcher()
+end
+function GuildAchieves:PLAYER_REGEN_ENABLED()
+	-- Leaving combat: show it again if anything is still waiting
+	UpdateHardwareWatcher()
 end
 
 -- ElvUI-Style UI System (independent implementation)
@@ -431,13 +594,21 @@ local function GetRandomMessage(category, level, playerName, achievementName)
 	return message
 end
 
--- Get a BCC-specific milestone level-up message
+-- Fill the placeholders shared by all level-up message pools
+local function FillLevelPlaceholders(message, playerName, level, className)
+	message = message:gsub("{player}", playerName)
+	message = message:gsub("{level}", tostring(level))
+	message = message:gsub("{class}", className or "adventurer")
+	return message
+end
+
+-- Get a BCC milestone level-up message
 local function GetBCCLevelMessage(level, playerName)
 	if not GuildAchievesData or not GuildAchievesData.BCCLevels then
 		DebugPrint("BCCLevels data not loaded!")
 		return nil
 	end
-	
+
 	local messages = GuildAchievesData.BCCLevels[level]
 	if not messages or #messages == 0 then
 		-- Fall back to generic BCC milestone messages
@@ -447,11 +618,76 @@ local function GetBCCLevelMessage(level, playerName)
 			return nil
 		end
 	end
-	
-	local message = messages[math.random(#messages)]
-	message = message:gsub("{player}", playerName)
-	message = message:gsub("{level}", tostring(level))
-	return message
+
+	return FillLevelPlaceholders(messages[math.random(#messages)], playerName, level)
+end
+
+-- Pick one message from a list of { pool = {...}, weight = n } candidates
+local function PickWeightedMessage(candidates)
+	local total = 0
+	for _, c in ipairs(candidates) do total = total + c.weight end
+	if total <= 0 then return nil end
+	local roll = math.random() * total
+	for _, c in ipairs(candidates) do
+		roll = roll - c.weight
+		if roll <= 0 then return c.pool[math.random(#c.pool)] end
+	end
+	local last = candidates[#candidates].pool
+	return last[math.random(#last)]
+end
+
+-- Get a WoW: Forever level-up message. Every level dings on Forever, so the pools are mixed:
+-- milestone levels (10/20/.../60) lean on their own messages, everything else draws from the
+-- player's class pool, the level-range pool for the zones they're in, and the generic pool.
+local function GetForeverLevelMessage(level, playerName, classToken, className)
+	local data = GuildAchievesData
+	if not data or not data.ForeverLevels then
+		DebugPrint("ForeverLevels data not loaded!")
+		return nil
+	end
+
+	local candidates = {}
+	local function add(pool, weight)
+		if pool and #pool > 0 then table.insert(candidates, { pool = pool, weight = weight }) end
+	end
+
+	local milestonePool = data.ForeverLevels[level]
+	local classPool = classToken and data.ForeverClassLevels and data.ForeverClassLevels[classToken]
+	local rangePool
+	if data.ForeverLevelRanges then
+		for _, range in ipairs(data.ForeverLevelRanges) do
+			if level >= range.min and level <= range.max then
+				rangePool = range.messages
+				break
+			end
+		end
+	end
+
+	if milestonePool then
+		add(milestonePool, 60)
+		add(classPool, 25)
+		add(rangePool, 10)
+		add(data.ForeverLevels["Generic"], 5)
+	else
+		add(classPool, 45)
+		add(rangePool, 30)
+		add(data.ForeverLevels["Generic"], 25)
+	end
+
+	local message = PickWeightedMessage(candidates)
+	if not message then
+		DebugPrint("No Forever messages found for level:", level)
+		return nil
+	end
+	return FillLevelPlaceholders(message, playerName, level, className)
+end
+
+-- Dispatch to the right flavor's level-up pool
+local function GetLevelUpMessage(ding)
+	if isForever then
+		return GetForeverLevelMessage(ding.level, ding.name, ding.class, ding.className)
+	end
+	return GetBCCLevelMessage(ding.level, ding.name)
 end
 
 -- Format a list of names nicely (e.g., "Alice, Bob, and Charlie")
@@ -468,6 +704,25 @@ local function FormatNameList(names)
 	end
 	result = result .. "and " .. names[count]
 	return result
+end
+
+-- One combined message when a single roster poll finds many level-ups at once (WoW: Forever only,
+-- since every level dings there). Keeps a busy leveling night from flooding guild chat.
+local MULTI_DING_THRESHOLD = 3
+local function GetForeverMultiDingMessage(dings)
+	local entries = {}
+	for _, ding in ipairs(dings) do
+		table.insert(entries, ding.name .. " (" .. tostring(ding.level) .. ")")
+	end
+	local list = FormatNameList(entries)
+	local pool = GuildAchievesData and GuildAchievesData.ForeverMultiDing
+	if not pool or #pool == 0 then
+		return "Grats to " .. list .. " on the dings!"
+	end
+	local message = pool[math.random(#pool)]
+	message = message:gsub("{list}", list)
+	message = message:gsub("{count}", tostring(#dings))
+	return message
 end
 
 -- Get combo message for one player earning multiple achievements
@@ -684,9 +939,8 @@ local function ProcessBatch()
 				if #message > 250 then
 					message = message:sub(1, 247) .. "..."
 				end
-		SendChatMessage(message, "GUILD")
-		lastMessageTime = GetTime()
-		DebugPrint("Sent:", message)
+				SendGuildChat(message)
+				lastMessageTime = GetTime()
 			end
 		end)
 		delay = delay + 0.3 -- Small gap between multiple messages
@@ -758,111 +1012,148 @@ local function StartBatchCollection()
 end
 
 -- =============================================================================
--- BCC Level-Up Polling System
--- Only active on Burning Crusade Classic where achievements don't exist.
+-- Level-Up Polling System
+-- Only active on flavors without achievements (Burning Crusade Classic, WoW: Forever).
 -- Polls guild roster every 30 seconds to detect milestone level-ups.
 -- Only tracks players while they are online - goes offline = tracking cleared.
 -- Only congratulates on actual dings (must see the previous level first).
 -- Verifies guild membership before congratulating.
 -- =============================================================================
 
+-- Ask the server for fresh roster data. The global GuildRoster() exists on Classic
+-- clients; the modern client (which WoW: Forever runs on) moved it to C_GuildInfo.
+local function RequestGuildRoster()
+	if C_GuildInfo and C_GuildInfo.GuildRoster then
+		C_GuildInfo.GuildRoster()
+	elseif GuildRoster then
+		GuildRoster()
+	end
+end
+
 local function BCCPollGuildRoster()
 	if not GuildAchieves.db or not GuildAchieves.db.profile.IsEnabled then return end
 	if not IsInGuild() then return end
-	
+
 	-- Request fresh roster data from server
-	if GuildRoster then
-		GuildRoster()
-	end
-	
+	RequestGuildRoster()
+
 	local numMembers = GetNumGuildMembers()
 	if numMembers == 0 then return end
 	
 	local currentOnline = {}
 	local myName = UnitName("player")
-	local milestonesDinged = {}
-	
+	local myGUID = UnitGUID and UnitGUID("player") or nil
+	local dings = {}
+	-- On WoW: Forever every level is a ding (unless the user turned that off); BCC only does milestones
+	local everyLevel = isForever and GuildAchieves.db.profile.ForeverEveryLevel ~= false
+
 	for i = 1, numMembers do
-		local fullName, _, _, level, _, _, _, _, isOnline = GetGuildRosterInfo(i)
+		-- Return order: name, rankName, rankIndex, level, classDisplayName, zone, publicNote,
+		-- officerNote, isOnline, status, classToken (e.g. "WARRIOR"), achievementPoints,
+		-- achievementRank, isMobile, canSoR, repStanding, guid
+		local fullName, _, _, level, classDisplayName, _, _, _, isOnline, _, classToken, _, _, _, _, _, guid = GetGuildRosterInfo(i)
 		if fullName and isOnline and level and level > 0 then
 			local name = fullName:match("([^%-]+)") or fullName
-			currentOnline[name] = level
-			
-			local previousLevel = bccTracker.onlineLevels[name]
-			if previousLevel and level > previousLevel then
-				-- Level increased since last poll - find the HIGHEST milestone crossed
-				-- Only congratulate on the highest one to avoid spam from boosts or rapid leveling
-				local highestMilestone = nil
-				for milestone, _ in pairs(BCC_MILESTONES) do
-					if milestone > previousLevel and milestone <= level then
-						if not highestMilestone or milestone > highestMilestone then
-							highestMilestone = milestone
+			currentOnline[name] = { level = level, class = classToken, className = classDisplayName }
+			-- Self check by GUID: on WoW: Forever the roster name carries a surname ("Lye Shamin")
+			-- while UnitName("player") may not, so a plain name comparison can miss.
+			local isSelf = (guid ~= nil and myGUID ~= nil and guid == myGUID) or (name == myName)
+
+			local previous = bccTracker.onlineLevels[name]
+			if previous and level > previous.level then
+				local dingLevel
+				if everyLevel then
+					-- Congratulate the level they're at now. One message even if they gained several
+					-- levels between polls, so rapid low-level dings don't flood guild chat.
+					dingLevel = level
+				else
+					-- Find the HIGHEST milestone crossed since last poll
+					for milestone, _ in pairs(LEVEL_MILESTONES) do
+						if milestone > previous.level and milestone <= level then
+							if not dingLevel or milestone > dingLevel then
+								dingLevel = milestone
+							end
 						end
 					end
 				end
-				if highestMilestone then
+				if dingLevel then
 					-- Skip self unless CongratsSelf is enabled
-					if name ~= myName or GuildAchieves.db.profile.CongratsSelf then
-						table.insert(milestonesDinged, {name = name, level = highestMilestone})
-						DebugPrint("BCC milestone detected:", name, "reached level", highestMilestone, "(was", previousLevel, ")")
+					if not isSelf or GuildAchieves.db.profile.CongratsSelf then
+						table.insert(dings, { name = name, level = dingLevel, class = classToken, className = classDisplayName })
+						DebugPrint("Level-up detected:", name, "reached level", dingLevel, "(was", previous.level, ")")
 					end
 				end
-			elseif not previousLevel then
+			elseif not previous then
 				-- First time seeing this player online - just record their level, don't congratulate
 				-- This prevents false congratulations for players who just logged in or joined the guild
-				DebugPrint("BCC: First time seeing", name, "online at level", level, "- recording without congratulation")
+				DebugPrint("First time seeing", name, "online at level", level, "- recording without congratulation")
 			end
 		end
 	end
-	
+
 	-- Replace tracking table with ONLY currently online players
 	-- When a player goes offline, their entry is removed
 	-- When they come back online, they're treated as "first seen" (no congratulation for offline progress)
 	bccTracker.onlineLevels = currentOnline
-	
-	-- Send congratulation messages with natural-looking delays
-	if #milestonesDinged > 0 then
-		local delay = 1.0 + math.random() * 2.0  -- 1-3 second initial delay
-		for _, ding in ipairs(milestonesDinged) do
-			C_Timer.After(delay, function()
-				if not GuildAchieves.db or not GuildAchieves.db.profile.IsEnabled then return end
-				
-				-- Verify player is still in guild and online (they appear in current tracking)
-				if not bccTracker.onlineLevels[ding.name] then
-					DebugPrint("BCC: Player", ding.name, "no longer online or in guild, skipping congratulation")
-					return
-				end
-				
-				-- Check if Level category is enabled
-				if GuildAchieves.db.profile.CategoryToggles.Level == false then
-					DebugPrint("BCC: Level category disabled, skipping")
-					return
-				end
-				
-				local message = GetBCCLevelMessage(ding.level, ding.name)
-				if message then
-					if #message > 250 then
-						message = message:sub(1, 247) .. "..."
-					end
-					SendChatMessage(message, "GUILD")
-					lastMessageTime = GetTime()
-					DebugPrint("BCC: Sent level-up message for", ding.name, "reaching level", ding.level)
-				end
-			end)
-			delay = delay + 1.0 + math.random() * 1.0  -- 1-2 second gap between multiple messages
+
+	if #dings == 0 then return end
+
+	-- Check if Level category is enabled
+	if GuildAchieves.db.profile.CategoryToggles.Level == false then
+		DebugPrint("Level category disabled, skipping", #dings, "level-up(s)")
+		return
+	end
+
+	local function SendGuildMessage(message)
+		if #message > 250 then
+			message = message:sub(1, 247) .. "..."
 		end
+		SendGuildChat(message)
+		lastMessageTime = GetTime()
+	end
+
+	-- Many dings in one poll: send a single combined message instead of a wall of them
+	if isForever and #dings > MULTI_DING_THRESHOLD then
+		C_Timer.After(1.0 + math.random() * 2.0, function()
+			if not GuildAchieves.db or not GuildAchieves.db.profile.IsEnabled then return end
+			local message = GetForeverMultiDingMessage(dings)
+			if message then
+				SendGuildMessage(message)
+				DebugPrint("Sent combined level-up message for", #dings, "players")
+			end
+		end)
+		return
+	end
+
+	-- Send congratulation messages with natural-looking delays
+	local delay = 1.0 + math.random() * 2.0  -- 1-3 second initial delay
+	for _, ding in ipairs(dings) do
+		C_Timer.After(delay, function()
+			if not GuildAchieves.db or not GuildAchieves.db.profile.IsEnabled then return end
+
+			-- Verify player is still in guild and online (they appear in current tracking)
+			if not bccTracker.onlineLevels[ding.name] then
+				DebugPrint("Player", ding.name, "no longer online or in guild, skipping congratulation")
+				return
+			end
+
+			local message = GetLevelUpMessage(ding)
+			if message then
+				SendGuildMessage(message)
+				DebugPrint("Sent level-up message for", ding.name, "reaching level", ding.level)
+			end
+		end)
+		delay = delay + 1.0 + math.random() * 1.0  -- 1-2 second gap between multiple messages
 	end
 end
 
 local function StartBCCTracking()
 	if bccTracker.ticker then return end  -- Already running
 	
-	DebugPrint("Starting BCC level-up tracking (polling every", bccTracker.POLL_INTERVAL, "seconds)")
-	
+	DebugPrint("Starting level-up tracking (polling every", bccTracker.POLL_INTERVAL, "seconds)")
+
 	-- Request initial roster data
-	if GuildRoster then
-		GuildRoster()
-	end
+	RequestGuildRoster()
 	
 	-- Initial population scan after a short delay for roster data to arrive
 	C_Timer.After(3, function()
@@ -983,6 +1274,9 @@ local options = {
 						GuildAchieves.db.profile.IsEnabled = value
 						if value then
 							GuildAchieves:Enable()
+							-- AceAddon's Enable() is a no-op if the addon object is already enabled (it always is
+							-- after login), so OnEnable won't re-run. Start milestone tracking directly; it's idempotent.
+							if useLevelTracking then StartBCCTracking() end
 							GuildAchieves:Print("Guild Achieves enabled!")
 						else
 							GuildAchieves:Disable()
@@ -1001,6 +1295,19 @@ local options = {
 						GuildAchieves.db.profile.CongratsSelf = value
 					end,
 					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				foreverEveryLevel = {
+					order = 2.5,
+					type = 'toggle',
+					name = 'Congratulate Every Level',
+					desc = 'WoW: Forever has no achievements, so guildies are congratulated on level-ups instead. On: every level dings. Off: only milestones (10, 20, 30, 40, 50, 60).',
+					get = function() return GuildAchieves.db.profile.ForeverEveryLevel ~= false end,
+					set = function(info, value)
+						GuildAchieves.db.profile.ForeverEveryLevel = value
+					end,
+					hidden = function() return not isForever end,
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+					width = 'full',
 				},
 				showMinimapButton = {
 					order = 3,
@@ -1295,6 +1602,34 @@ local options = {
 					end,
 					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
 				},
+				sendTestNow = {
+					order = 1.1,
+					type = 'execute',
+					name = 'Send Test to Guild',
+					desc = 'Actually sends a short test line to guild chat right now (from this click, which counts as a hardware event). Use with Debug Mode on to see which chat API was used and whether the client reports a chat lockdown.',
+					func = function()
+						-- Bypass the queue on purpose: this click is itself a hardware event
+						SendGuildChatNow("Guild Achieves test (immediate): if you can read this, guild chat sending works.")
+					end,
+					confirm = true,
+					confirmText = 'This will post a test line in guild chat. Continue?',
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
+				sendTestDelayed = {
+					order = 1.2,
+					type = 'execute',
+					name = 'Send Test to Guild (3s delay)',
+					desc = 'Same as above, but sent from a timer 3 seconds later, the way level-up and achievement messages are sent. On clients that block timer-driven guild chat (WoW: Forever) it is queued and goes out on your next key press, world click, jump, or chat line.',
+					func = function()
+						GuildAchieves:Print("Sending a test line to guild chat in 3 seconds...")
+						C_Timer.After(3, function()
+							SendGuildChat("Guild Achieves test (delayed): if you can read this, timer-driven guild chat works.")
+						end)
+					end,
+					confirm = true,
+					confirmText = 'This will post a test line in guild chat after 3 seconds. Continue?',
+					disabled = function() return not GuildAchieves.db.profile.IsEnabled end,
+				},
 				debugMode = {
 					order = 2,
 					type = 'toggle',
@@ -1335,18 +1670,24 @@ local function CreateMinimapButton()
 		icon = "Interface\\Icons\\Achievement_guildperk_everybodysfriend",
 		OnClick = function(self, button)
 			if button == "LeftButton" then
-				-- Toggle enabled state
+				-- Toggle enabled state. Go through Enable()/Disable() (like the options panel toggle)
+				-- so milestone level tracking on BCC / WoW: Forever starts and stops with the addon.
 				GuildAchieves.db.profile.IsEnabled = not GuildAchieves.db.profile.IsEnabled
 				if GuildAchieves.db.profile.IsEnabled then
+					GuildAchieves:Enable()
+					if useLevelTracking then StartBCCTracking() end  -- see options toggle for why
 					GuildAchieves:Print("Guild Achieves enabled!")
 				else
+					GuildAchieves:Disable()
 					GuildAchieves:Print("Guild Achieves disabled.")
 				end
 			elseif button == "RightButton" then
 				-- Open settings - try modern Settings API first (Dragonflight+, Midnight),
 				-- then fall back to older InterfaceOptionsFrame_OpenToCategory for Classic/BCC/Wrath
-				if Settings and Settings.OpenToCategory then
-					Settings.OpenToCategory("GuildAchieves")
+				-- Settings.OpenToCategory needs the category ID that AddToBlizOptions returned. On 12.0+
+				-- clients (Midnight, WoW: Forever) that ID is numeric and the category name no longer works.
+				if Settings and Settings.OpenToCategory and optionsCategoryID then
+					Settings.OpenToCategory(optionsCategoryID)
 				elseif InterfaceOptionsFrame_OpenToCategory then
 					InterfaceOptionsFrame_OpenToCategory("Guild Achieves")
 					InterfaceOptionsFrame_OpenToCategory("Guild Achieves") -- called twice (Blizzard bug workaround)
@@ -1381,13 +1722,16 @@ function GuildAchieves:OnInitialize()
 	
 	-- Register with Interface Options
 	local AceConfigDialog = LibStub("AceConfigDialog-3.0")
-	AceConfigDialog:AddToBlizOptions("GuildAchieves", "Guild Achieves")
+	-- Keep the returned category ID: it's what Settings.OpenToCategory expects (see minimap right-click)
+	local _, categoryID = AceConfigDialog:AddToBlizOptions("GuildAchieves", "Guild Achieves")
+	optionsCategoryID = categoryID
 	
 	-- Default settings
 	defaults = {
 		profile = {
 			IsEnabled = true,
 			CongratsSelf = false,
+			ForeverEveryLevel = true,  -- WoW: Forever only: congratulate every level, not just milestones
 			ShowMinimapButton = true,
 			UITemplate = "Default",
 			Cooldown = 5,
@@ -1439,11 +1783,28 @@ function GuildAchieves:OnInitialize()
 	-- Uses our private unnamed eventFrame (see top of file) to avoid the Midnight 12.0
 	-- AceEvent30Frame shared-frame taint bug.
 	if not isBCC then
-		eventFrame:RegisterEvent("CHAT_MSG_GUILD_ACHIEVEMENT")
+		-- WoW: Forever runs on the modern client, so the event exists even though the
+		-- achievement system itself doesn't appear to. Registering it is harmless there and
+		-- means we'd pick achievements up automatically if Blizzard ever enables them.
+		-- pcall guards against the event being unknown on an unexpected client build.
+		local ok, err = pcall(eventFrame.RegisterEvent, eventFrame, "CHAT_MSG_GUILD_ACHIEVEMENT")
+		if not ok then
+			DebugPrint("Could not register CHAT_MSG_GUILD_ACHIEVEMENT:", tostring(err))
+		end
+	end
+	-- Hardware-event chat queue support: learn when a direct send is blocked, and keep the
+	-- keyboard watcher hidden during combat (see the guild chat sending section near the top)
+	for _, eventName in ipairs({ "ADDON_ACTION_BLOCKED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }) do
+		local ok, err = pcall(eventFrame.RegisterEvent, eventFrame, eventName)
+		if not ok then
+			DebugPrint("Could not register", eventName, ":", tostring(err))
+		end
 	end
 
 	DebugPrint("GuildAchieves initialized successfully")
-	if isBCC then
+	if isForever then
+		self:Print("Guild Achieves loaded (WoW: Forever)! Tracking milestone level-ups. Type /ga for options.")
+	elseif isBCC then
 		self:Print("Guild Achieves loaded (Burning Crusade Classic)! Tracking milestone level-ups. Type /ga for options.")
 	elseif isMidnight then
 		self:Print("Guild Achieves loaded (Midnight 12.0.1)! Type /guildachieves or /ga for options.")
@@ -1454,8 +1815,8 @@ end
 
 function GuildAchieves:OnEnable()
 	DebugPrint("GuildAchieves:OnEnable called")
-	if isBCC and self.db and self.db.profile.IsEnabled then
-		-- Start BCC level tracking with a delay for guild data to load
+	if useLevelTracking and self.db and self.db.profile.IsEnabled then
+		-- Start milestone level tracking with a delay for guild data to load
 		C_Timer.After(5, function()
 			if self.db.profile.IsEnabled then
 				StartBCCTracking()
@@ -1466,7 +1827,7 @@ end
 
 function GuildAchieves:OnDisable()
 	DebugPrint("GuildAchieves:OnDisable called")
-	if isBCC then
+	if useLevelTracking then
 		StopBCCTracking()
 	end
 end
