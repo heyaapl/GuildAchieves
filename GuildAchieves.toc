@@ -12,7 +12,7 @@
 ## IconTexture: Interface\AddOns\GuildAchieves\icon
 ## Notes: Automatically congratulates guildies on achievements with humorous messages!
 ## Title: Guild Achieves
-## Version: 1.2.3
+## Version: 1.2.4
 ## SavedVariables: GuildAchievesDB
 embeds.xml
 Data\achievements.lua
