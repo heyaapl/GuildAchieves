@@ -1,5 +1,8 @@
 ## Version 1.2.3 - WoW Forever Support
 
+### 🌙 Retail 12.1.5 Support
+Bumped the Retail Interface to `120105` (patch 12.1.5) and the CurseForge packaging version to `12.1.5`. Since Midnight, the client marks addons whose TOC does not list the current patch as incompatible and refuses to load them, which is what the "Non-Functional" and "No longer works" reports were hitting after 12.0 and 12.1 shipped. Ace3 and LibDBIcon are pulled fresh at packaging time, so the release zip always carries current libraries.
+
 ### ♾️ WoW: Forever (1.60.1) Support
 Declared Interface `16001` (`## Interface-Camelot`) so the addon loads without the out-of-date flag on the WoW: Forever client, and added `1.60.1` to the CurseForge packaging versions. Forever is detected via `WOW_PROJECT_CAMELOT`.
 
