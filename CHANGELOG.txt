@@ -1,3 +1,36 @@
+## Version 1.2.3 - WoW Forever Support
+
+### ♾️ WoW: Forever (1.60.1) Support
+Declared Interface `16001` (`## Interface-Camelot`) so the addon loads without the out-of-date flag on the WoW: Forever client, and added `1.60.1` to the CurseForge packaging versions. Forever is detected via `WOW_PROJECT_CAMELOT`.
+
+Forever doesn't appear to have an achievement system, so it works the way Burning Crusade Classic already did: the addon polls the guild roster every 30 seconds and congratulates level-ups. Unlike BCC, **every level dings on Forever** (2 through 60). A new "Congratulate Every Level" toggle in General settings (only shown on Forever) switches it back to milestones only (10 / 20 / 30 / 40 / 50 / 60).
+
+- The roster poll now records each guildie's class, so messages can be class-specific
+- If a player gains several levels between polls they get one message for the level they're at now
+- If more than 3 guildies ding in the same poll, one combined message lists them all instead of flooding guild chat
+
+### 🎉 625 New Vanilla-Themed Level-Up Messages
+All in `Data/forever_messages.lua`, mixed by a weighted picker (milestone levels lean on their own pool; other levels draw from class, level-range, and generic pools):
+- **130 milestone messages**: 20 each for levels 10-50, 30 for level 60
+- **80 generic any-level messages**
+- **90 level-range messages**: 15 each for 1-9, 10-19, 20-29, 30-39, 40-49, 50-59, themed around the zones and dungeons of that bracket
+- **315 class-specific messages**: 35 each for all nine Vanilla classes (warrior, paladin, hunter, rogue, priest, shaman, mage, warlock, druid)
+- **10 multi-ding messages** for busy nights
+- Style: no emojis, no em-dashes, no all-caps emphasis. New `{class}` placeholder available alongside `{player}` and `{level}`
+
+### 🔧 Fixes
+- **Guild chat on WoW: Forever actually posts now**: Forever only lets addons post to guild chat from a hardware event; a send from a timer returns normally but the client drops it with "Interface action failed because of an AddOn". Since every congrats comes out of a timer or roster poll, messages on Forever are now queued and sent on the player's next key press, click in the game world, jump, or chat line. Keyboard capture passes the key through and mouse clicks are never swallowed. Queued messages older than 3 minutes are dropped rather than posted late. Other clients still send directly, and if one of those sends is blocked (`ADDON_ACTION_BLOCKED`) the addon switches to the queue for the rest of the session and re-queues that message.
+- **Guild chat API**: All guild messages now go through `C_ChatInfo.SendChatMessage` when it exists (the global `SendChatMessage` was deprecated in 11.2), falling back to the global on older clients. Debug Mode logs which API was used, any error, whether the client reports a chat messaging lockdown, and when a message is queued.
+- **Self-detection with surnames**: Forever characters have surnames in the guild roster ("Lye Shamin") while `UnitName("player")` may not, so the addon congratulated you on your own level-ups with Congratulate Yourself off. Self is now matched by GUID.
+- **New Advanced buttons**: "Send Test to Guild" and "Send Test to Guild (3s delay)" post a real test line to guild chat, immediately or from a timer, to tell a hardware-event restriction apart from an API problem.
+- **Addon icon colors**: The 256px `icon.tga` shipped in 1.2.2 had its red and blue channels swapped, so the gold shield showed up blue-green in the AddOns list. Regenerated it from the original artwork.
+- **Minimap right-click opens settings again on 12.0+ clients**: `Settings.OpenToCategory` was being passed the addon name, which the Midnight / WoW: Forever Settings API no longer accepts. The addon now stores the category ID returned by `AddToBlizOptions` and opens that.
+- **Guild roster requests on the modern client**: Forever runs on the modern client where the global `GuildRoster()` no longer exists; roster polling now uses `C_GuildInfo.GuildRoster()` when available and falls back to the Classic global otherwise
+- **Minimap toggle now starts/stops milestone tracking**: Left-clicking the minimap button to enable the addon on BCC / Forever previously only flipped the setting; it now goes through `Enable()` / `Disable()` like the options panel toggle, so roster polling actually starts
+- The `CHAT_MSG_GUILD_ACHIEVEMENT` listener is still registered on Forever (guarded with `pcall`) so achievements would be picked up automatically if Blizzard ever enables them there
+
+---
+
 ## Version 1.2.2 - Midnight Rescue
 
 ### 🔧 Midnight 12.0 Fixed
